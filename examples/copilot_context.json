@@ -1,0 +1,7 @@
+{
+  "task": {"request": "Analyze connectivity from 10.20.3.7 to dc01.corp.example", "entities": ["10.20.3.7"]},
+  "asset_profile": {"ip": "10.20.3.7", "hostname": "dc01.corp.example", "owner": "EXAMPLE\\analyst"},
+  "graph": {"nodes": [{"ip": "10.20.3.7"}, {"hostname": "dc01.corp.example"}], "edges": [{"source_ip": "10.20.3.7", "dest": "dc01.corp.example", "port": 443}]},
+  "memory": {"recent": ["Previous analysis of 10.20.3.7 showed no threat"]},
+  "mitre_techniques": ["T1078"]
+}

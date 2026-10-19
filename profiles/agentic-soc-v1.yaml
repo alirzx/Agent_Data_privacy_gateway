@@ -1,0 +1,6 @@
+name: agentic-soc-v1
+version: "1.0.0"
+internal_suffixes: [".local", ".internal", ".corp", ".lan", ".intranet", ".corp.example"]
+protect_public_typed_ips: true
+protect_tickets: true
+protect_secrets: true

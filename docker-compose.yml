@@ -1,0 +1,43 @@
+name: soorin-privacy
+services:
+  privacy-api:
+    build: .
+    env_file: .env
+    environment:
+      DLP_STORE_BACKEND: redis
+      DLP_REDIS_URL: redis://redis:6379/0
+      DLP_PROFILE_DIR: /opt/dlp/profiles
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 512m
+    cpus: 1.0
+    networks: [edge, private]
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1000", "--maxmemory", "256mb", "--maxmemory-policy", "noeviction"]
+    volumes: ["dlp-redis:/data"]
+    expose: ["6379"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks: [private]
+networks:
+  edge:
+  private:
+    internal: true
+volumes:
+  dlp-redis:

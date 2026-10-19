@@ -1,0 +1,25 @@
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+.venv/
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+.coverage
+htmlcov/
+
+# Frontend
+node_modules/
+dist/
+
+# Local data and logs
+*.log
+data/

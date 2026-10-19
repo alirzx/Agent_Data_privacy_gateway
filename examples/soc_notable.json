@@ -1,0 +1,13 @@
+{
+  "class_uid": 2001,
+  "class_name": "Security Finding",
+  "severity": "medium",
+  "risk_score": 50,
+  "src_endpoint": {"ip": "B_309", "hostname": "ws-01.corp.example"},
+  "device": {"name": "dc01.corp.example", "ip": "10.20.3.7"},
+  "user": {"name": "EXAMPLE\\analyst"},
+  "splunk_notable": {"search_name": "ESCU - Password Spray", "risk_object_type": "network", "risk_object": "B_309"},
+  "description": "EXAMPLE\\analyst observed on dc01.corp.example from 10.20.3.7; src: SIEM; Windows Registry Change",
+  "annotations_mitre_attack": "T1110.003",
+  "password": "SYNTHETIC_TEST_SECRET_ONLY"
+}
