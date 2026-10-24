@@ -179,4 +179,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             async def favicon():
                 return FileResponse(built / "favicon.svg", media_type="image/svg+xml")
 
+            @app.get("/logosoorin.svg")
+            async def soorin_logo():
+                return FileResponse(built / "logosoorin.svg", media_type="image/svg+xml")
+
     return app

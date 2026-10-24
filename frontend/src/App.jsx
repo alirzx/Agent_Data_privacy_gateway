@@ -47,13 +47,13 @@ async function callApi(path, apiKey, payload) {
 
 function Logo(){
   return (
-    <div className="logo-mark" aria-hidden="true">
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-        <path d="M4 7c5-5 11-5 16 0" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"/>
-        <path d="M6 12c3.5-3.5 8.5-3.5 12 0" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"/>
-        <path d="M9 17c2-2 4-2 6 0" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"/>
-      </svg>
-    </div>
+    <img
+      className="brand-logo"
+      src="/logosoorin.svg"
+      alt="Soorin"
+      width={148}
+      height={48}
+    />
   );
 }
 function Tag({children,tone='muted'}){return <span className={'tag '+tone}>{children}</span>}
@@ -128,7 +128,7 @@ function App() {
 
   return <div className="app">
     <aside className="sidebar">
-      <div className="brand"><Logo/><div><b>soorin<span className="brand-dot">sec</span></b><small>DATA PRIVACY GATEWAY</small></div></div>
+      <div className="brand"><Logo/><small>DATA PRIVACY GATEWAY</small></div>
       <div className="side-section-label">WORKSPACE</div>
       <button className={'nav-item '+(tab==='workspace'?'active':'')} onClick={()=>setTab('workspace')}><Boxes size={18}/> Privacy Workspace <span className="nav-arrow">›</span></button>
       <button className={'nav-item '+(tab==='guide'?'active':'')} onClick={()=>setTab('guide')}><Code2 size={18}/> Integration Guide</button>
