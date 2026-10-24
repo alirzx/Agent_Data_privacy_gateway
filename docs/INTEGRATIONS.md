@@ -5,7 +5,7 @@ These are integration **instructions and source-specific targets**, not patches 
 ## Universal contract
 
 ```python
-async with AsyncPrivacyClient("http://privacy-api:8000", api_key=SERVICE_KEY) as privacy:
+async with AsyncPrivacyClient("http://privacy-api:8484", api_key=SERVICE_KEY) as privacy:
     context = await privacy.create_context(tenant_id=TRUSTED_TENANT, profile=PROFILE)
     projected = await privacy.encode(messages, format="messages", context_id=context["context_id"], registrations=IDENTITY_HINTS)
     # This is the ONLY data that can be sent to an untrusted provider.

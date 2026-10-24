@@ -14,7 +14,7 @@ async def fake_provider(messages: list[dict]) -> str:
 
 
 async def main():
-    async with AsyncPrivacyClient("http://127.0.0.1:8000", os.environ["DLP_DEMO_API_KEY"]) as privacy:
+    async with AsyncPrivacyClient("http://127.0.0.1:8484", os.environ["DLP_DEMO_API_KEY"]) as privacy:
         context = await privacy.create_context(profile="agentic-soc-v1")
         messages = [{"role": "user", "content": "Review dc01.corp.example at 10.20.3.7"}]
         protected = await privacy.encode(messages, format="messages", context_id=context["context_id"])

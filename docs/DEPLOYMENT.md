@@ -8,7 +8,7 @@
 
 The included Compose file uses:
 
-- `privacy-api`: FastAPI served by non-root UID 10001, read-only filesystem, tmpfs, all Linux capabilities dropped, PID/CPU/memory caps, no access logs. Loopback port 8000 only.
+- `privacy-api`: FastAPI served by non-root UID 10001, read-only filesystem, tmpfs, all Linux capabilities dropped, PID/CPU/memory caps, no access logs. Loopback port 8484 only.
 - `redis`: private network, volume-backed encrypted context ciphertext, healthcheck, memory cap, AOF persistence. No published Redis port.
 - Frontend built in multi-stage Docker image and served only when `DLP_UI_ENABLED=true` and `DLP_DEV_MODE=true`.
 

@@ -37,8 +37,8 @@ Terminal 1:
 
 ```bash
 make api
-# FastAPI: http://127.0.0.1:8000
-# OpenAPI (local dev only): http://127.0.0.1:8000/docs
+# FastAPI: http://127.0.0.1:8484
+# OpenAPI (local dev only): http://127.0.0.1:8484/docs
 ```
 
 Terminal 2:
@@ -57,11 +57,11 @@ Open the UI, enter the local API key printed by `init_dev_env.py`, then press **
 ```bash
 python3 scripts/init_dev_env.py # skip if .env already exists
 docker compose up --build -d
-curl http://127.0.0.1:8000/ready
-# UI (dev-mode only): http://127.0.0.1:8000/
+curl http://127.0.0.1:8484/ready
+# UI (dev-mode only): http://127.0.0.1:8484/
 ```
 
-Compose sets the store backend to Redis; Redis is **not exposed on a host port**. The API is published only on `127.0.0.1:8000`. A second shared ingress network allows the published API to be reached without exposing Redis. Configure TLS/authenticated Redis and a proper proxy or service mesh for real deployments. **Do not deploy this development Compose unchanged on an Internet-facing host.**
+Compose sets the store backend to Redis; Redis is **not exposed on a host port**. The API is published only on `127.0.0.1:8484`. A second shared ingress network allows the published API to be reached without exposing Redis. Configure TLS/authenticated Redis and a proper proxy or service mesh for real deployments. **Do not deploy this development Compose unchanged on an Internet-facing host.**
 
 ## API example
 
@@ -69,7 +69,7 @@ Run from a shell that already loaded your `.env`:
 
 ```bash
 set -a; source .env; set +a
-curl -sS http://127.0.0.1:8000/v1/encode \
+curl -sS http://127.0.0.1:8484/v1/encode \
   -H "Authorization: Bearer $DLP_DEMO_API_KEY" \
   -H 'Content-Type: application/json' \
   -d '{"profile":"agentic-soc-v1","format":"json","payload":{"src_ip":"10.20.3.7","hostname":"dc01.corp.example","severity":"high"}}'

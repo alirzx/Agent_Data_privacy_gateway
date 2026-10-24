@@ -8,7 +8,7 @@ services:
       DLP_REDIS_URL: redis://redis:6379/0
       DLP_PROFILE_DIR: /opt/dlp/profiles
     ports:
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:8484:8484"
     depends_on:
       redis:
         condition: service_healthy

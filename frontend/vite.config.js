@@ -8,9 +8,9 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
     proxy: {
-      '/v1': 'http://127.0.0.1:8000',
-      '/health': 'http://127.0.0.1:8000',
-      '/ready': 'http://127.0.0.1:8000'
+      '/v1': 'http://127.0.0.1:8484',
+      '/health': 'http://127.0.0.1:8484',
+      '/ready': 'http://127.0.0.1:8484'
     }
   },
   build: { outDir: 'dist', emptyOutDir: true }

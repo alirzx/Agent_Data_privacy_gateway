@@ -5,7 +5,7 @@ setup:
 	$(PYTHON) scripts/init_dev_env.py
 
 api:
-	cd backend && set -a && . ../.env && set +a && PYTHONPATH=. uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8000 --reload
+	cd backend && set -a && . ../.env && set +a && PYTHONPATH=. uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8484 --reload
 
 ui:
 	cd frontend && npm run dev
@@ -29,4 +29,4 @@ docker-down:
 	docker compose down
 
 docs-example:
-	@echo 'curl -fsS http://127.0.0.1:8000/health'
+	@echo 'curl -fsS http://127.0.0.1:8484/health'
