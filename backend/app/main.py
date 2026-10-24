@@ -102,6 +102,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(503, detail="Encrypted context storage unavailable")
         return {"status": "ready", "store": settings.store_backend}
 
+    @app.get("/v1/dev/console")
+    async def dev_console():
+        """Dev-only bootstrap for the localhost UI. Never available in production mode."""
+        if not (settings.dev_mode and settings.ui_enabled and settings.demo_api_key):
+            raise HTTPException(404, detail="Development console bootstrap is disabled")
+        return {
+            "connected": True,
+            "client_id": "local-dev",
+            "api_key": settings.demo_api_key,
+        }
+
     @app.get("/v1/policies")
     async def list_policies(_principal: Principal = Depends(get_principal)):
         return {"policies": policies.names()}

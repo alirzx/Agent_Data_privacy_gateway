@@ -26,6 +26,7 @@ class Settings:
     default_ttl_seconds: int
     max_ttl_seconds: int
     cors_origins: tuple[str, ...]
+    demo_api_key: str | None = None
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -40,11 +41,14 @@ class Settings:
         clients = json.loads(os.getenv("DLP_CLIENTS_JSON", "[]"))
         if not isinstance(clients, list):
             raise RuntimeError("DLP_CLIENTS_JSON must be an array")
-        if dev and os.getenv("DLP_DEMO_API_KEY"):
+        demo_api_key = os.getenv("DLP_DEMO_API_KEY") or None
+        if demo_api_key is not None:
+            demo_api_key = demo_api_key.strip() or None
+        if dev and demo_api_key:
             import hashlib
 
             clients.append({
-                "client_id": "local-dev", "key_sha256": hashlib.sha256(os.environ["DLP_DEMO_API_KEY"].encode()).hexdigest(),
+                "client_id": "local-dev", "key_sha256": hashlib.sha256(demo_api_key.encode()).hexdigest(),
                 "tenants": ["*"], "allow_tenantless": True, "allow_secret_decode": False,
             })
         if not clients:
@@ -72,4 +76,5 @@ class Settings:
             default_ttl_seconds=int(os.getenv("DLP_CONTEXT_TTL", "3600")),
             max_ttl_seconds=int(os.getenv("DLP_MAX_CONTEXT_TTL", "86400")),
             cors_origins=tuple(x.strip() for x in os.getenv("DLP_CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",") if x.strip()) if dev else (),
+            demo_api_key=demo_api_key if dev and ui_enabled else None,
         )

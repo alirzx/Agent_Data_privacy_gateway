@@ -4,6 +4,10 @@ import copy
 import hashlib
 import json
 
+from fastapi.testclient import TestClient
+
+from app.main import create_app
+
 
 def create(client, auth, *, tenant="tenant-1", profile="agentic-soc-v1"):
     response = client.post("/v1/contexts", headers=auth,
@@ -32,6 +36,20 @@ def test_auth_required(client):
     assert client.post("/v1/encode", json={"payload": "abc", "format": "text"}).status_code == 401
     assert client.get("/v1/policies").status_code == 401
     assert client.get("/health").status_code == 200
+    assert client.get("/v1/dev/console").status_code == 404
+
+
+def test_dev_console_bootstrap_when_ui_enabled(settings):
+    enabled = settings.__class__(
+        **{**settings.__dict__, "ui_enabled": True, "demo_api_key": "local-demo-console-key"},
+    )
+    with TestClient(create_app(enabled)) as local:
+        response = local.get("/v1/dev/console")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["connected"] is True
+        assert body["api_key"] == "local-demo-console-key"
+        assert body["client_id"] == "local-dev"
 
 
 def test_basic_roundtrip_and_semantics(client, auth):

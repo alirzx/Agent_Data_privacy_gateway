@@ -55,6 +55,7 @@ function App() {
   const [tenant,setTenant] = useState('');
   const [context,setContext] = useState('');
   const [apiKey,setApiKey] = useState('');
+  const [keyBound,setKeyBound] = useState(false);
   const [visibleKey,setVisibleKey] = useState(false);
   const [input,setInput] = useState(sample);
   const [output,setOutput] = useState('');
@@ -70,6 +71,16 @@ function App() {
     let active = true;
     fetch('/ready',{cache:'no-store'}).then(r => { if (active) setHealth(r.ok?'online':'offline'); })
       .catch(()=>{ if (active) setHealth('offline'); });
+    fetch('/v1/dev/console',{cache:'no-store'})
+      .then(async r => {
+        if (!active || !r.ok) return;
+        const data = await r.json().catch(()=>null);
+        if (data?.api_key) {
+          setApiKey(data.api_key);
+          setKeyBound(true);
+        }
+      })
+      .catch(()=>{ /* bootstrap is optional outside Docker/dev UI */ });
     return ()=>{ active=false; };
   },[]);
 
@@ -133,7 +144,7 @@ function App() {
             <label className="field"><span>Privacy profile</span><div className="select-wrap"><select value={profile} onChange={e=>setProfile(e.target.value)}>{profiles.map(p=><option key={p.value} value={p.value}>{p.label}</option>)}</select><ChevronDown size={16}/></div></label>
             <label className="field"><span>Input format</span><div className="select-wrap"><select value={format} onChange={e=>switchFormat(e.target.value)}><option value="json">Structured JSON</option><option value="text">Plain text</option><option value="messages">LLM messages</option></select><ChevronDown size={16}/></div></label>
             <label className="field"><span>Tenant ID <em>(optional)</em></span><input spellCheck="false" value={tenant} onChange={e=>setTenant(e.target.value)} placeholder="Tenantless context"/></label>
-            <label className="field"><span>Development API key</span><div className="password-wrap"><input type={visibleKey?'text':'password'} autoComplete="off" spellCheck="false" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder="Paste your local API key"/><button title="Show/hide local key" onClick={()=>setVisibleKey(v=>!v)} type="button">{visibleKey?<EyeOff size={16}/>:<Eye size={16}/>}</button></div></label>
+            <label className="field"><span>Development API key {keyBound?<em>(auto-connected)</em>:null}</span><div className="password-wrap"><input type={visibleKey?'text':'password'} autoComplete="off" spellCheck="false" value={apiKey} readOnly={keyBound} onChange={e=>{setApiKey(e.target.value);setKeyBound(false);}} placeholder={keyBound?'Connected from gateway .env':'Paste your local API key'}/><button title="Show/hide local key" onClick={()=>setVisibleKey(v=>!v)} type="button">{visibleKey?<EyeOff size={16}/>:<Eye size={16}/>}</button></div></label>
           </div>
           <div className="context-row"><div><Radio size={15}/><b>Active privacy context</b><span>Context-scoped, time-limited mappings</span></div><input aria-label="Privacy context ID" value={context} onChange={e=>setContext(e.target.value)} placeholder="Created automatically on first encode" spellCheck="false"/></div>
         </section>
