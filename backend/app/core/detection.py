@@ -17,11 +17,24 @@ from app.core.policy import Policy
 from app.models import Registration
 
 IP_FIELDS = {"src_ip", "source_ip", "source_address", "source_addr", "dst_ip", "dest_ip", "destination_ip", "destination_address", "client_ip", "remote_ip", "local_ip", "ip", "ip_address", "clientip"}
-HOST_FIELDS = {"host", "hostname", "host_name", "device_name", "computer_name", "machine_name", "endpoint_name", "dvc", "dest_nt_host"}
-USER_FIELDS = {"user", "username", "user_name", "user_id", "principal", "actor", "account", "samaccountname", "upn", "src_user", "dest_user", "target_user", "owner", "subject_user", "initiating_user"}
+HOST_FIELDS = {
+    "host", "hostname", "host_name", "device_name", "computer_name", "machine_name", "endpoint_name",
+    "dvc", "dest_nt_host", "splunk_server", "risk_object_system", "success_dc", "failed_dc", "user_dc",
+    "_risk_system", "risk_system",
+}
+USER_FIELDS = {
+    "user", "username", "user_name", "user_id", "principal", "actor", "account", "samaccountname", "upn",
+    "src_user", "dest_user", "target_user", "owner", "subject_user", "initiating_user",
+    "failed_user", "tried_accounts", "risk_object_user", "_risk_user", "risk_user",
+}
 EMAIL_FIELDS = {"email", "email_address", "user_email", "sender_email", "recipient_email"}
 ASSET_FIELDS = {"asset", "asset_id", "device_id", "endpoint_id", "host_id", "system_id", "machine_id", "risk_object_id"}
-PATH_FIELDS = {"path", "file_path", "process_path", "image_path", "executable_path", "home_directory", "working_directory", "current_directory", "command_path"}
+PATH_FIELDS = {
+    "path", "file_path", "process_path", "parent_process_path", "image", "image_path", "image_loaded",
+    "loaded_file", "loaded_file_path", "executable_path", "home_directory", "working_directory",
+    "current_directory", "command_path", "process_current_directory", "file_name", "original_file_name",
+    "process_name", "parent_process_name", "process_exec", "parent_process_exec",
+}
 MAC_FIELDS = {"mac", "mac_address", "src_mac", "dst_mac", "physical_address"}
 SUBNET_FIELDS = {"subnet", "cidr", "network", "network_cidr", "ip_range"}
 DOMAIN_FIELDS = {"internal_domain", "dns_domain", "domain_name", "ad_domain"}
@@ -33,8 +46,23 @@ ORG_FIELDS = {"tenant_id", "organization_id", "org_id", "company_id"}
 GROUP_FIELDS = {"ad_group", "group_name", "security_group", "group_sid"}
 CLOUD_FIELDS = {"resource_arn", "aws_arn", "azure_resource_id", "cloud_resource_id", "subscription_id", "aws_account_id"}
 SERIAL_FIELDS = {"serial_number", "device_serial", "hardware_serial", "chassis_serial", "bios_serial"}
-INDEX_FIELDS = {"splunk_index", "index_name", "sourcetype_private"}
+INDEX_FIELDS = {"splunk_index", "index_name", "sourcetype_private", "index"}
 REF_FIELDS = {"change_ticket", "ticket_id", "incident_id", "case_id", "case_number", "notable_id", "finding_uid", "asset_reference"}
+# Splunk/OCSF identity carriers whose concrete kind depends on a sibling type field.
+POLYMORPHIC_IDENTITY_FIELDS = {
+    "src", "dst", "dest", "entity", "risk_object", "normalized_risk_object", "threat_object", "all_risk_objects",
+}
+IDENTITY_TYPE_MAP = {
+    "user": "USER", "account": "USER", "username": "USER",
+    "system": "HOST", "device": "HOST", "host": "HOST", "hostname": "HOST", "computer": "HOST",
+    "ip": "IP", "network": "IP", "address": "IP",
+    "asset": "ASSET", "file": "PATH", "file_name": "PATH", "filename": "PATH",
+    "file_hash": "ASSET", "hash": "ASSET",
+    "domain": "DOMAIN", "fqdn": "HOST", "url": "URL_INTERNAL",
+}
+MULTIVALUE_KINDS = frozenset({
+    "USER", "HOST", "EMAIL", "ASSET", "IP", "IP_OPAQUE", "SPLUNK_INDEX", "DOMAIN", "PATH",
+})
 SECRET_KINDS = {
     "password": "CRED_PASSWORD", "passwd": "CRED_PASSWORD", "passphrase": "CRED_PASSPHRASE",
     "api_key": "CRED_API_KEY", "apikey": "CRED_API_KEY", "access_key": "CRED_ACCESS_KEY",
@@ -55,9 +83,14 @@ IPV4_RE = re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w.])")
 IPV6_RE = re.compile(r"(?<![\w:])(?:[0-9a-fA-F]{0,4}:){2,}[0-9a-fA-F:]{0,4}(?![\w:])")
 CIDR_RE = re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}/(?:\d|[12]\d|3[0-2])(?![\w.])")
 MAC_RE = re.compile(r"(?<![A-Za-z0-9])(?:[0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}(?![A-Za-z0-9])")
-WINDOWS_USER_RE = re.compile(r"(?<![\w\\])[A-Za-z0-9_.-]{1,64}\\[A-Za-z0-9_.@$-]{1,128}(?!\w)")
+# Allow one or two backslashes: Splunk _raw often escapes DOMAIN\user as DOMAIN\\user.
+WINDOWS_USER_RE = re.compile(
+    r"(?<![\w\\])[A-Za-z0-9_.-]{1,64}\\{1,2}[A-Za-z0-9_.@$-]{1,128}(?!\w)"
+)
 WIN_PATH_RE = re.compile(r"(?<!\w)[A-Za-z]:\\[^\s\"'<>|]+")
-UNC_PATH_RE = re.compile(r"\\\\[A-Za-z0-9_.-]+\\[^\s\"'<>|]+")
+# Require a non-identifier before UNC so DOMAIN\\server\share (escaped AD
+# principals in Splunk _raw) is not classified as a filesystem path.
+UNC_PATH_RE = re.compile(r"(?<![A-Za-z0-9_])\\\\[A-Za-z0-9_.-]+\\[^\s\"'<>|]+")
 UNIX_PATH_RE = re.compile(r"(?<![\w./])(?:/[A-Za-z0-9_.-]+){2,}/?")
 URL_RE = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
 FQDN_RE = re.compile(r"(?<![\w.])(?:[A-Za-z0-9][A-Za-z0-9-]*\.)+[A-Za-z]{2,}\.?(?!\w)")
@@ -67,11 +100,94 @@ AWS_RE = re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b")
 PRIVATE_KEY_RE = re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----.*?-----END (?:RSA |EC |OPENSSH )?PRIVATE KEY-----", re.DOTALL)
 SECRET_ASSIGN_RE = re.compile(r"(?i)(?<![\w])(?:password|passwd|passphrase|api[_-]?key|secret[_-]?access[_-]?key|client[_-]?secret|access[_-]?token|refresh[_-]?token|session[_-]?token|secret|credential|cookie|token)\s*[:=]\s*(?:[\"'](?P<quoted>[^\"']+)[\"']|(?P<secret>[^\s;\"'}]+))")
 BEARER_RE = re.compile(r"(?i)\b(?:authorization|proxy-authorization)\s*:\s*(?:bearer|basic)\s+(?P<secret>[^\s,;\"'}]+)")
-TEXT_LABEL_RE = re.compile(r"(?i)(?<!\w)(?P<label>src_ip|dst_ip|source_ip|dest_ip|hostname|host|username|user|device_name|asset_id|email|principal)\s*[:=]\s*[\"']?(?P<value>[^\s,;\"'}]+)")
+# Keep label extraction conservative: bare src/dest in prose often bind to
+# stopwords (e.g. "src: SIEM") and must not become free-text HOST tokens.
+TEXT_LABEL_RE = re.compile(
+    r"(?i)(?<!\w)(?P<label>src_ip|dst_ip|source_ip|dest_ip|ip_address|hostname|host|username|user|"
+    r"failed_user|tried_accounts|device_name|asset_id|email|principal|splunk_server)\s*[:=]\s*"
+    r"[\"']?(?P<value>[^\s,;\"'}]+)"
+)
 
 
 def normalize_key(raw: str) -> str:
     return re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", str(raw)).lower().replace("-", "_").replace(".", "_")
+
+
+def expand_multivalue(kind: str, value: str) -> list[str]:
+    """Split Splunk-style multivalue identity fields without inventing free-text tokens."""
+    if kind not in MULTIVALUE_KINDS:
+        return [value]
+    if "\n" not in value and "\r" not in value:
+        return [value]
+    parts = [part.strip() for part in re.split(r"[\r\n]+", value) if part.strip()]
+    return parts if len(parts) > 1 else [value]
+
+
+def is_low_signal_identity(kind: str, value: str) -> bool:
+    """Drop junk MV fragments that are not actionable identities."""
+    trimmed = value.strip()
+    if len(trimmed) < 2:
+        return True
+    if re.fullmatch(r"[\\/._-]+", trimmed):
+        return True
+    if kind in {"USER", "HOST", "ASSET", "IP_OPAQUE"} and trimmed.isdigit():
+        return True
+    # Bare 1-2 char USER tokens (IT, HR, DC, PC) collide with common acronyms in
+    # SOC narratives and break encode validation after projection.
+    if kind == "USER" and "\\" not in trimmed and "@" not in trimmed and len(trimmed) < 3:
+        return True
+    if kind in {"HOST", "ASSET"} and len(trimmed) < 2:
+        return True
+    return False
+
+
+HOST_STOPWORDS = frozenset({
+    "siem", "change", "windows", "registry", "source", "unknown", "null", "none", "n/a",
+    "true", "false", "local", "remote", "network", "system", "host", "user", "process",
+})
+REGISTRY_HIVES = frozenset({
+    "hklm", "hkcu", "hkcr", "hku", "hkcc",
+    "hkey_local_machine", "hkey_current_user", "hkey_classes_root", "hkey_users", "hkey_current_config",
+})
+
+
+def infer_identity_kind(value: str) -> str | None:
+    """Best-effort kind for named identity fields when a sibling type is absent."""
+    trimmed = value.strip()
+    if not trimmed or trimmed.casefold() in PLACEHOLDERS:
+        return None
+    try:
+        ipaddress.ip_address(trimmed)
+        return "IP"
+    except ValueError:
+        pass
+    if EMAIL_RE.fullmatch(trimmed):
+        return "EMAIL"
+    if "\\" in trimmed and not trimmed.startswith("\\\\") and not re.match(r"^[A-Za-z]:\\", trimmed):
+        return "USER"
+    if WIN_PATH_RE.fullmatch(trimmed) or UNC_PATH_RE.fullmatch(trimmed) or UNIX_PATH_RE.fullmatch(trimmed):
+        return "PATH"
+    if trimmed.lower().startswith(("http://", "https://")):
+        return "URL_INTERNAL"
+    if trimmed.casefold() in HOST_STOPWORDS:
+        return None
+    return "HOST"
+
+
+def sibling_identity_type(siblings: dict | None) -> str:
+    if not siblings:
+        return ""
+    for key in (
+        "entity_type", "risk_object_type", "threat_object_type", "normalized_risk_object_type",
+        "src_type", "dest_type", "dst_type",
+    ):
+        raw = siblings.get(key)
+        if raw is None:
+            continue
+        text = str(raw).strip()
+        if text:
+            return normalize_key(text)
+    return ""
 
 
 def canonical(kind: str, value: str) -> str:
@@ -125,6 +241,17 @@ class Detector:
             return None
         if kind == "IP":
             kind = "IP" if ip_kind(value) != "IP_OPAQUE" else "IP_OPAQUE"
+        if is_low_signal_identity(kind, value):
+            return None
+        # Alias tokens / registry paths can look like DOMAIN\user after projection
+        # (e.g. HOST_<hex>\Software or HKLM\USER_<hex>). Those are not identities.
+        if kind == "USER" and "\\" in value:
+            domain, _sep, account = value.partition("\\")
+            account = account.lstrip("\\")
+            if domain.casefold() in REGISTRY_HIVES or domain.casefold().startswith("hkey_"):
+                return None
+            if KIND_RE.fullmatch(domain) or KIND_RE.fullmatch(account):
+                return None
         if kind.startswith("CRED_") and not self.policy.protect_secrets:
             return None
         if kind in {"TICKET", "CASE", "REFERENCE"} and not self.policy.protect_tickets:
@@ -188,10 +315,18 @@ class Detector:
             return "IP"
         if leaf == "name" and parent in {"user", "account", "principal"}:
             return "USER"
-        if leaf in {"src", "dst", "dest", "entity", "risk_object", "normalized_risk_object"}:
-            typ = normalize_key(str((siblings or {}).get("entity_type") or (siblings or {}).get("risk_object_type") or ""))
-            return {"user": "USER", "system": "HOST", "device": "HOST", "host": "HOST", "ip": "IP", "network": "IP", "asset": "ASSET"}.get(typ)
+        if leaf in POLYMORPHIC_IDENTITY_FIELDS:
+            mapped = IDENTITY_TYPE_MAP.get(sibling_identity_type(siblings))
+            return mapped or "IDENTITY"
         return None
+
+    def _resolve_kind(self, path: tuple[str, ...], siblings: dict | None, value: str) -> str | None:
+        sem = self._semantics(path, siblings)
+        if sem == "IDENTITY":
+            return infer_identity_kind(value)
+        if sem == "HOST" and value.strip().casefold() in HOST_STOPWORDS:
+            return None
+        return sem
 
     def _typed(self, kind: str, value: str, path: str) -> Candidate | None:
         if kind == "URL_INTERNAL":
@@ -208,6 +343,9 @@ class Detector:
                 ipaddress.ip_network(value, strict=False)
             except ValueError:
                 return None
+        if kind == "DOMAIN":
+            # Typed domain fields are organizational; free-text still requires internal suffixes.
+            pass
         return self._accepted(kind, value, path, "structured")
 
     def discover(self, payload: Any, registrations: list[Registration] | None = None) -> list[Candidate]:
@@ -232,11 +370,15 @@ class Detector:
                 for idx, child in enumerate(obj):
                     walk(child, (*path, str(idx)), sibling, depth + 1)
             elif isinstance(obj, str):
-                sem = self._semantics(path, sibling)
-                if sem:
-                    value = self._typed(sem, obj, ".".join(path))
-                    if value:
-                        found.append(value)
+                # Resolve against the full field first so multivalue blobs keep a typed kind,
+                # then emit each MV token so narrative copies (_raw, titles) are scrubbed too.
+                seed_kind = self._resolve_kind(path, sibling, obj)
+                if seed_kind:
+                    for piece in expand_multivalue(seed_kind, obj):
+                        kind = self._resolve_kind(path, sibling, piece) or seed_kind
+                        value = self._typed(kind, piece, ".".join(path))
+                        if value:
+                            found.append(value)
                 found.extend(self.discover_text(obj, path=".".join(path)))
         walk(payload, (), None, 0)
         return list({(c.kind, c.value): c for c in found}.values())
@@ -311,7 +453,7 @@ class Detector:
         for match in TEXT_LABEL_RE.finditer(text):
             label = normalize_key(match.group("label"))
             value = match.group("value")
-            kind = self._semantics((label,), None)
+            kind = self._resolve_kind((label,), None, value)
             if kind:
                 add(kind, value, "context-label")
         return list({(c.kind, c.value): c for c in found}.values())

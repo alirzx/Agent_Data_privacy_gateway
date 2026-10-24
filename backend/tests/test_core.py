@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -68,6 +69,200 @@ def test_public_ioc_kept_in_text_typed_public_ip_hidden():
     detector=Detector(policy())
     assert not any(x.value=='8.8.8.8' for x in detector.discover('Public IOC 8.8.8.8'))
     assert any(x.value=='8.8.8.8' for x in detector.discover({'src_ip':'8.8.8.8'}))
+
+
+def test_splunk_notable_schema_gaps_generic_v1():
+    """Regression: Splunk ES notable columns that previously leaked under generic-v1."""
+    detector = Detector(PolicyRegistry(ROOT / 'profiles').get('generic-v1'))
+    payload = {
+        'entity': 'ws-finance-01',
+        'entity_type': 'system',
+        'risk_object': 'ws-finance-01',
+        'risk_object_type': 'system',
+        'src': 'B_106',
+        'dest': 'ws-finance-01',
+        'IpAddress': '203.0.113.50',
+        'failed_user': 'svc-backup\nalice.j\nadmin.local',
+        'tried_accounts': 'svc-backup\nalice.j',
+        'user': 'alice.j',
+        'splunk_server': 'sh-primary',
+        'index': 'notable',
+        'Image': 'C:\\Windows\\System32\\net.exe',
+        'parent_process_path': 'C:\\Windows\\System32\\cmd.exe',
+        'threat_object': 'ws-finance-01',
+        'threat_object_type': 'system',
+        'orig_rule_title': 'Potential password spraying attack on ws-finance-01',
+        '_raw': 'IpAddress="203.0.113.50" dest="ws-finance-01" failed_user="alice.j" src="B_106"',
+        'severity': 'medium',
+        'risk_score': '50.0',
+    }
+    found = detector.discover(payload)
+    values = {entry.value for entry in found}
+    kinds = {entry.kind for entry in found}
+    assert 'alice.j' in values and 'svc-backup' in values and 'admin.local' in values
+    assert 'ws-finance-01' in values and 'B_106' in values
+    assert '203.0.113.50' in values
+    assert 'sh-primary' in values and 'notable' in values
+    assert 'C:\\Windows\\System32\\net.exe' in values
+    assert {'USER', 'HOST', 'IP', 'SPLUNK_INDEX', 'PATH'} <= kinds
+    assert not any(entry.value == 'medium' for entry in found)
+
+
+@pytest.mark.asyncio
+async def test_splunk_notable_encode_scrubs_narrative_generic_v1():
+    engine = PrivacyEngine(
+        crypto=Crypto(os.urandom(32)),
+        store=MemoryBlobStore(),
+        policies=PolicyRegistry(ROOT / 'profiles'),
+    )
+    principal = Principal('a', frozenset(), True, False)
+    context = await engine.create_context(principal, tenant_id=None, profile='generic-v1')
+    payload = {
+        'dest': 'eccairs-lab',
+        'entity_type': 'system',
+        'risk_object': 'eccairs-lab',
+        'risk_object_type': 'system',
+        'src': 'B_106',
+        'IpAddress': '198.51.100.20',
+        'failed_user': 'spray-user-1\nspray-user-2',
+        'tried_accounts': 'spray-user-1\nspray-user-2',
+        'splunk_server': 'idx-lab-01',
+        'index': 'risk',
+        'orig_rule_title': 'Potential password spraying attack on eccairs-lab',
+        '_raw': 'dest="eccairs-lab" IpAddress="198.51.100.20" tried_accounts="spray-user-1"',
+        'severity': 'medium',
+    }
+    protected = await engine.encode(
+        principal, context_id=context['context_id'], fmt='json', payload=payload, registrations=[],
+    )
+    blob = json.dumps(protected['payload'])
+    for secret in (
+        'eccairs-lab', 'B_106', '198.51.100.20', 'spray-user-1', 'spray-user-2', 'idx-lab-01',
+    ):
+        assert secret not in blob
+    assert protected['payload']['severity'] == 'medium'
+    assert protected['payload']['index'].startswith('SPLUNK_INDEX_')
+    assert protected['payload']['splunk_server'].startswith('HOST_')
+    assert protected['payload']['IpAddress'].startswith('IP_V4_')
+
+
+def test_polymorphic_identity_infers_without_sibling_type():
+    detector = Detector(PolicyRegistry(ROOT / 'profiles').get('generic-v1'))
+    found = detector.discover({'src': 'B_309', 'dest': '10.0.0.8', 'threat_object': 'CORP\\alice'})
+    by_value = {entry.value: entry.kind for entry in found}
+    assert by_value['B_309'] == 'HOST'
+    assert by_value['10.0.0.8'] == 'IP'
+    assert by_value['CORP\\alice'] == 'USER'
+
+
+def test_low_signal_multivalue_fragments_rejected():
+    detector = Detector(PolicyRegistry(ROOT / 'profiles').get('generic-v1'))
+    found = detector.discover({
+        'failed_user': '0\n1\n\\\nA\nreal.user',
+        'tried_accounts': 'DC\nsvc-backup',
+        'file_name': 'payload.ps1',
+        'original_file_name': 'invoice.scr',
+    })
+    values = {entry.value for entry in found}
+    assert 'real.user' in values
+    assert 'svc-backup' in values
+    # Two-letter spray fragments stay unprotected by design (acronym collision).
+    assert 'DC' not in values
+    assert 'payload.ps1' in values and 'invoice.scr' in values
+    assert '0' not in values and '1' not in values and 'A' not in values
+    assert '\\' not in values
+
+
+@pytest.mark.asyncio
+async def test_bare_user_does_not_splice_windows_principal():
+    engine = PrivacyEngine(
+        crypto=Crypto(os.urandom(32)),
+        store=MemoryBlobStore(),
+        policies=PolicyRegistry(ROOT / 'profiles'),
+    )
+    principal = Principal('a', frozenset(), True, False)
+    context = await engine.create_context(principal, tenant_id=None, profile='generic-v1')
+    payload = {
+        'tried_accounts': 'alice\nsvc.lab',
+        'user': 'CORP\\alice',
+        '_raw': 'user=CORP\\alice tried_accounts=alice',
+        'file_name': 'beacon.exe',
+        'severity': 'high',
+    }
+    protected = await engine.encode(
+        principal, context_id=context['context_id'], fmt='json', payload=payload, registrations=[],
+    )
+    blob = json.dumps(protected['payload'])
+    assert 'alice' not in blob.casefold() or 'CORP\\' not in blob
+    assert 'CORP\\alice' not in protected['payload']['_raw']
+    assert 'beacon.exe' not in blob
+    assert protected['payload']['file_name'].startswith('PATH_')
+    assert 'high' in blob
+    # Must not leave a DOMAIN\<alias> principal shaped token for rediscovery.
+    assert not re.search(r'CORP\\USER_[A-F0-9]{24,40}', blob)
+
+
+def test_escaped_windows_principal_not_false_unc():
+    detector = Detector(PolicyRegistry(ROOT / 'profiles').get('generic-v1'))
+    # Splunk-style escaped principal glued in prose must be USER, not UNC PATH suffix.
+    text = 'Account TEAM\\\\srv-backup$ failed interactively'
+    found = detector.discover({
+        '_raw': text,
+        'registry_key_name': 'HOST_AAAAAAAAAAAAAAAABBBBBBBBBBBB\\Software',
+        'registry_path': 'HKLM\\USER_AAAAAAAAAAAAAAAABBBBBBBBBBBB',
+    })
+    assert any(item.kind == 'USER' and 'TEAM' in item.value for item in found)
+    assert not any(item.kind == 'PATH' and item.value.startswith('\\\\srv-backup') for item in found)
+    assert not any(item.kind == 'USER' and item.value.startswith('HOST_') for item in found)
+    assert not any(item.kind == 'USER' and item.value.upper().startswith('HKLM') for item in found)
+
+
+@pytest.mark.asyncio
+async def test_filename_path_replace_is_case_insensitive():
+    engine = PrivacyEngine(
+        crypto=Crypto(os.urandom(32)),
+        store=MemoryBlobStore(),
+        policies=PolicyRegistry(ROOT / 'profiles'),
+    )
+    principal = Principal('a', frozenset(), True, False)
+    context = await engine.create_context(principal, tenant_id=None, profile='generic-v1')
+    payload = {
+        'file_name': 'Payload.PS1',
+        '_raw': 'file_name=\"payload.ps1\" Image=C:\\\\Temp\\\\payload.ps1',
+        'severity': 'low',
+    }
+    protected = await engine.encode(
+        principal, context_id=context['context_id'], fmt='json', payload=payload, registrations=[],
+    )
+    blob = json.dumps(protected['payload']).casefold()
+    assert 'payload.ps1' not in blob
+    assert protected['payload']['file_name'].startswith('PATH_')
+
+
+@pytest.mark.asyncio
+async def test_registry_alias_artifact_does_not_fail_encode():
+    engine = PrivacyEngine(
+        crypto=Crypto(os.urandom(32)),
+        store=MemoryBlobStore(),
+        policies=PolicyRegistry(ROOT / 'profiles'),
+    )
+    principal = Principal('a', frozenset(), True, False)
+    context = await engine.create_context(principal, tenant_id=None, profile='generic-v1')
+    payload = {
+        'dest': 'ws-lab-01',
+        'entity_type': 'system',
+        'registry_key_name': 'ws-lab-01\\Software\\Demo',
+        'orig_rule_description': 'Registry change on ws-lab-01\\Software\\Demo by CORP\\\\svc.lab',
+        '_raw': 'dest=ws-lab-01 registry_key_name=ws-lab-01\\Software\\Demo user=CORP\\\\svc.lab',
+        'severity': 'medium',
+    }
+    protected = await engine.encode(
+        principal, context_id=context['context_id'], fmt='json', payload=payload, registrations=[],
+    )
+    blob = json.dumps(protected['payload'])
+    assert 'ws-lab-01' not in blob
+    assert 'svc.lab' not in blob
+    assert protected['payload']['severity'] == 'medium'
 
 
 @pytest.mark.asyncio

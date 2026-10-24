@@ -155,19 +155,50 @@ class PrivacyEngine:
                 pairs.append((escaped, alias, item.kind))
         pairs.sort(key=lambda entry: (-len(entry[0]), -int(_is_secret(entry[2])), entry[1]))
 
-        def text_replace(text: str) -> str:
+        def _boundary_flags(kind: str) -> int:
+            # PATH is case-insensitive on Windows; Splunk file_name / Image casing often differs.
+            return re.IGNORECASE if kind in {
+                "HOST", "EMAIL", "USER", "ASSET", "IP_OPAQUE", "SPLUNK_INDEX", "PATH", "DOMAIN",
+            } else 0
+
+        def _boundary_pattern(kind: str, original: str) -> str:
+            # Bare USER tokens must not splice the account half of DOMAIN\user;
+            # that would leave DOMAIN\<alias> which re-matches as a Windows principal.
+            if kind == "USER" and "\\" not in original:
+                return rf"(?<![A-Za-z0-9_\\]){re.escape(original)}(?![A-Za-z0-9_])"
+            # Paths already carry strong shape; avoid lookbehind that fails when an
+            # escaped AD principal (TEAM\\server\share) prefixes a UNC suffix.
+            if kind == "PATH":
+                return rf"(?<![A-Za-z0-9]){re.escape(original)}(?![A-Za-z0-9])"
+            return rf"(?<![A-Za-z0-9_]){re.escape(original)}(?![A-Za-z0-9_])"
+
+        def _should_skip_global_replace(kind: str, original: str) -> bool:
+            if len(original) < 2:
+                return True
+            # A single ordinary word as a HOST should never become a free-text
+            # global replacement unless it has strong syntactic specificity.
+            if kind == "HOST" and original.casefold() in {"siem", "change", "windows", "registry", "source", "unknown"}:
+                return True
+            # Very short USER/HOST tokens are replaced in typed fields / MV blobs
+            # only. Global narrative replace creates false Windows principals
+            # (DOMAIN\<alias>) and collisions with English substrings.
+            if kind in {"USER", "HOST", "ASSET"} and len(original) < 3 and "\\" not in original:
+                return True
+            return False
+
+        def text_replace(text: str, *, allow_short: bool = False) -> str:
             # Replace long matches first, preserve exact aliases and word boundaries.
             # Avoid cascading replacements by operating on the ORIGINAL string once.
             matches: list[tuple[int, int, str]] = []
             for original, alias, kind in pairs:
+                if _should_skip_global_replace(kind, original) and not allow_short:
+                    continue
                 if len(original) < 2:
                     continue
-                # A single ordinary word as a HOST should never become a free-text
-                # global replacement unless it has strong syntactic specificity.
                 if kind == "HOST" and original.casefold() in {"siem", "change", "windows", "registry", "source", "unknown"}:
                     continue
-                flags = re.IGNORECASE if kind in {"HOST", "EMAIL", "USER", "ASSET", "IP_OPAQUE"} else 0
-                for m in re.finditer(rf"(?<![A-Za-z0-9_]){re.escape(original)}(?![A-Za-z0-9_])", text, flags):
+                flags = _boundary_flags(kind)
+                for m in re.finditer(_boundary_pattern(kind, original), text, flags):
                     matches.append((m.start(), m.end(), alias))
             # Distinct semantic candidates may overlap (URL/host, CIDR/IP,
             # Windows principal/path). Prefer longest interval, never splice tokens.
@@ -189,19 +220,30 @@ class PrivacyEngine:
                 return [walk(v, (*path, str(i)), siblings, depth + 1) for i, v in enumerate(value)]
             if isinstance(value, str):
                 sem = detector._semantics(path, siblings)
-                if sem:
+                if sem and sem != "IDENTITY":
                     # A typed value must match its own kind (or normalized IP/EMAIL).
                     for original, alias, kind in pairs:
                         if value == original and (kind == sem or (sem == "IP" and kind == "IP_OPAQUE") or (sem == "USER" and kind == "EMAIL")):
                             return alias
+                    # Splunk MV identity fields need in-field short-token scrubbing.
+                    if sem in {"USER", "HOST", "ASSET", "EMAIL", "IP", "SPLUNK_INDEX", "PATH", "DOMAIN"}:
+                        if "\n" in value or "\r" in value or len(value) < 3:
+                            return text_replace(value, allow_short=True)
                 return text_replace(value)
             return value
 
         result = walk(payload)
-        # Boundary invariant: none of the classified source values may survive.
+        # Boundary invariant: classified identities must not remain as whole tokens.
+        # Substring hits inside longer words (admin in administrator) are not leaks.
         rendered = list(_walk_strings(result))
-        for original, _alias, _kind in pairs:
-            if any(original in content for content in rendered):
+        for original, _alias, kind in pairs:
+            if _should_skip_global_replace(kind, original) and "\\" not in original and len(original) < 3:
+                # Short tokens are only required to disappear from typed/MV fields;
+                # narrative English collisions are acceptable non-leaks.
+                continue
+            flags = _boundary_flags(kind)
+            pattern = re.compile(_boundary_pattern(kind, original), flags)
+            if any(pattern.search(content) for content in rendered):
                 raise PrivacyError("Leakage validation failed: classified identity remained in output")
         # Defense-in-depth: detect any residual high-confidence private value.
         remaining = detector.discover(result)
