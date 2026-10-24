@@ -8,7 +8,9 @@ services:
       DLP_REDIS_URL: redis://redis:6379/0
       DLP_PROFILE_DIR: /opt/dlp/profiles
     ports:
-      - "127.0.0.1:8484:8484"
+      # Bind all interfaces so LAN VMs (e.g. http://192.168.x.x:8484) can reach the API/UI.
+      # For internet-facing hosts prefer 127.0.0.1 + reverse proxy/TLS instead.
+      - "8484:8484"
     depends_on:
       redis:
         condition: service_healthy
