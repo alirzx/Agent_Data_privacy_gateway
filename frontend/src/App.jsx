@@ -15,6 +15,8 @@ import {
 
 const PREVIEW_CHARS = 6000;
 const MAX_INLINE_CHARS = 512 * 1024;
+/** Cap live textarea growth so streaming 1 GiB does not freeze the tab. */
+const STREAM_DISPLAY_CHARS = 256 * 1024;
 /** Browser console accepts up to 1 GiB via streamed chunked encode (not one shot). */
 const MAX_FILE_BYTES = 1024 * 1024 * 1024;
 
@@ -122,6 +124,8 @@ function App() {
   const inputFull = useRef(sample);
   const outputFull = useRef('');
   const outputBlob = useRef(null);
+  const outputParts = useRef([]);
+  const outputAreaRef = useRef(null);
   const inputFile = useRef(null);
   const fileInputRef = useRef(null);
 
@@ -134,9 +138,37 @@ function App() {
   const adoptOutput = (text, blob = null) => {
     outputFull.current = text || '';
     outputBlob.current = blob;
+    outputParts.current = blob ? [] : (text ? [text] : []);
     const bytes = blob ? blob.size : new Blob([text || '']).size;
     setOutputLabel(bytes > MAX_INLINE_CHARS ? `${formatBytes(bytes)} — preview only · use Download` : '');
     setOutput(text && text.length > MAX_INLINE_CHARS ? previewText(text) : (text || ''));
+  };
+
+  const beginStreamOutput = () => {
+    outputParts.current = [];
+    outputFull.current = '';
+    outputBlob.current = null;
+    setOutput('');
+    setOutputLabel('Streaming…');
+    setStats(null);
+  };
+
+  const appendStreamChunk = ({ piece, index, total, context_id, bytesOut }) => {
+    outputParts.current.push(piece);
+    if (context_id) setContext(context_id);
+    setOutput((prev) => {
+      const next = prev + piece;
+      if (next.length <= STREAM_DISPLAY_CHARS) return next;
+      // Keep a live tail so the panel still updates while the full Blob grows.
+      const tail = next.slice(-STREAM_DISPLAY_CHARS);
+      return `… [live stream — showing last ${formatBytes(STREAM_DISPLAY_CHARS)} of ${formatBytes(bytesOut)}]\n` + tail;
+    });
+    setOutputLabel(`Streaming chunk ${index}/${total} · ${formatBytes(bytesOut)}`);
+    outputFull.current = (outputFull.current + piece).slice(0, STREAM_DISPLAY_CHARS * 2);
+    requestAnimationFrame(() => {
+      const el = outputAreaRef.current;
+      if (el) el.scrollTop = el.scrollHeight;
+    });
   };
 
   useEffect(()=>{
@@ -171,6 +203,7 @@ function App() {
       );
       let result;
       if (useChunkedText) {
+        beginStreamOutput();
         const chunks = file
           ? iterateFileLineChunks(file)
           : splitTextIntoLineChunks(raw);
@@ -185,6 +218,10 @@ function App() {
           knownTotal: file ? Math.max(1, Math.ceil(file.size / (4 * 1024 * 1024))) : null,
           onProgress: (p) => {
             if (generation === runGeneration.current) setProgress(p);
+          },
+          onChunk: async (chunkInfo) => {
+            if (generation !== runGeneration.current) return;
+            appendStreamChunk(chunkInfo);
           },
         });
       } else {
@@ -209,6 +246,14 @@ function App() {
           });
         }
         const pretty = jsonPretty(result.payload, format);
+        beginStreamOutput();
+        appendStreamChunk({
+          piece: pretty,
+          index: 1,
+          total: 1,
+          context_id: result.context_id,
+          bytesOut: new Blob([pretty]).size,
+        });
         result = {
           context_id: result.context_id,
           payloadPreview: pretty,
@@ -218,9 +263,16 @@ function App() {
         };
       }
       if (generation !== runGeneration.current) return;
+      const finalBlob = result.payloadBlob
+        || new Blob(outputParts.current, { type: 'text/plain;charset=utf-8' });
       startTransition(() => {
         if (result.context_id) setContext(result.context_id);
-        adoptOutput(result.payloadPreview || '', result.payloadBlob || null);
+        outputBlob.current = finalBlob;
+        setOutputLabel(
+          finalBlob.size > STREAM_DISPLAY_CHARS
+            ? `${formatBytes(finalBlob.size)} complete · preview capped · Download for full file`
+            : 'Transformation completed'
+        );
         setStats({
           ...(result.stats || {}),
           ...(result.chunks > 1 ? { chunks_processed: result.chunks } : {}),
@@ -401,9 +453,16 @@ function App() {
               </div>
               <span className="editor-number">02 / OUTPUT</span>
             </div>
-            <textarea readOnly value={output} spellCheck="false" aria-label="Protected output" placeholder={operation==='encode'?'Your tokenized payload will appear here…':'Your decoded response will appear here…'}/>
+            <textarea
+              ref={outputAreaRef}
+              readOnly
+              value={output}
+              spellCheck="false"
+              aria-label="Protected output"
+              placeholder={operation==='encode'?'Your tokenized payload will appear here…':'Your decoded response will appear here…'}
+            />
             <div className="editor-footer">
-              <div><span className="dot-green"/>{output ? 'Transformation completed' : 'Awaiting transformation'}</div>
+              <div><span className="dot-green"/>{busy && output ? 'Streaming into output…' : (output ? 'Transformation completed' : 'Awaiting transformation')}</div>
               <div className="editor-footer-actions">
                 <button type="button" onClick={copy} disabled={!(outputBlob.current || outputFull.current || output)}>{copied?<Check size={14}/>:<Copy size={14}/>} {copied?'Copied':'Copy'}</button>
                 <button type="button" onClick={() => downloadBlob(operation==='encode'?'protected-output.txt':'rehydrated-output.txt', outputBlob.current || outputFull.current || output)} disabled={!(outputBlob.current || outputFull.current || output)}><Download size={14}/> Download</button>

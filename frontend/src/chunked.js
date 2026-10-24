@@ -77,13 +77,14 @@ export async function transformTextChunked({
   tenant,
   contextId,
   onProgress,
+  onChunk,
   knownTotal = null,
 }) {
   let context = contextId || null;
   const blobParts = [];
   let stats = null;
   let index = 0;
-  let preview = '';
+  let bytesOut = 0;
   const totalHint = knownTotal || (Array.isArray(chunks) ? chunks.length : null);
   for await (const piece of chunks) {
     index += 1;
@@ -118,14 +119,21 @@ export async function transformTextChunked({
       stats = result.stats;
     }
     blobParts.push(outPiece);
-    if (preview.length < 6000) preview = (preview + outPiece).slice(0, 12000);
+    bytesOut += new Blob([outPiece]).size;
+    await onChunk?.({
+      piece: outPiece,
+      index,
+      total: totalHint || index,
+      context_id: context,
+      stats,
+      bytesOut,
+    });
   }
   onProgress?.({ done: index, total: index, phase: operation });
   const blob = new Blob(blobParts, { type: 'text/plain;charset=utf-8' });
   return {
     context_id: context,
     payloadBlob: blob,
-    payloadPreview: preview,
     stats,
     chunks: index,
   };
