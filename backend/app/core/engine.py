@@ -1,6 +1,7 @@
 """Context-scoped irreversible-at-egress aliases with authorized reversible mappings."""
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -191,7 +192,8 @@ class PrivacyEngine:
 
     async def _project(self, payload: Any, detector: Detector, context: dict, dek: bytes,
                        registrations: list[Registration]) -> tuple[Any, dict[str, int]]:
-        discovered = detector.discover(payload, registrations)
+        # Detection is CPU-heavy on multi-MB CSV; keep the event loop free for /health.
+        discovered = await asyncio.to_thread(detector.discover, payload, registrations)
         pairs: list[tuple[str, str, str]] = []
         for item in discovered:
             alias = await self._token(context, dek, item.kind, item.value)
@@ -280,34 +282,38 @@ class PrivacyEngine:
                 return text_replace(value)
             return value
 
-        result = walk(payload)
-        # Boundary invariant: classified identities must not remain as whole tokens.
-        # Substring hits inside longer words (admin in administrator) are not leaks.
-        rendered = list(_walk_strings(result))
-        for original, _alias, kind in pairs:
-            if _should_skip_global_replace(kind, original) and "\\" not in original and len(original) < 3:
-                # Short tokens are only required to disappear from typed/MV fields;
-                # narrative English collisions are acceptable non-leaks.
-                continue
-            flags = _boundary_flags(kind)
-            pattern = re.compile(_boundary_pattern(kind, original), flags)
-            if any(pattern.search(content) for content in rendered):
-                raise PrivacyError("Leakage validation failed: classified identity remained in output")
-        # Defense-in-depth: detect any residual high-confidence private value.
-        remaining = detector.discover(result)
-        if remaining:
-            # Already-tokenized aliases are excluded by Detector._accepted.
-            raise PrivacyError("Leakage validation failed: unmatched sensitive pattern")
-        return result, {
-            "tokenized_unique": len(set(alias for _o, alias, _k in pairs)),
-            "mapping_entries": len(context["items"]),
-            "credential_aliases": sum(1 for _o, _a, kind in pairs if _is_secret(kind)),
-        }
+        def finalize() -> tuple[Any, dict[str, int]]:
+            result = walk(payload)
+            # Boundary invariant: classified identities must not remain as whole tokens.
+            # Substring hits inside longer words (admin in administrator) are not leaks.
+            rendered = list(_walk_strings(result))
+            for original, _alias, kind in pairs:
+                if _should_skip_global_replace(kind, original) and "\\" not in original and len(original) < 3:
+                    # Short tokens are only required to disappear from typed/MV fields;
+                    # narrative English collisions are acceptable non-leaks.
+                    continue
+                flags = _boundary_flags(kind)
+                pattern = re.compile(_boundary_pattern(kind, original), flags)
+                if any(pattern.search(content) for content in rendered):
+                    raise PrivacyError("Leakage validation failed: classified identity remained in output")
+            # Defense-in-depth: detect any residual high-confidence private value.
+            remaining = detector.discover(result)
+            if remaining:
+                # Already-tokenized aliases are excluded by Detector._accepted.
+                raise PrivacyError("Leakage validation failed: unmatched sensitive pattern")
+            return result, {
+                "tokenized_unique": len(set(alias for _o, alias, _k in pairs)),
+                "mapping_entries": len(context["items"]),
+                "credential_aliases": sum(1 for _o, _a, kind in pairs if _is_secret(kind)),
+            }
+
+        return await asyncio.to_thread(finalize)
 
     async def encode(self, principal: Principal, *, context_id: str, fmt: str, payload: Any,
                      registrations: list[Registration]) -> dict:
         self._validate_payload(payload, fmt)
-        for attempt in range(6):
+        # More CAS retries: detection now yields via to_thread so concurrent encodes overlap more.
+        for attempt in range(24):
             context, previous = await self._load(principal, context_id)
             policy = self.policies.get(context["profile"])
             dek = self.crypto.unwrap_dek(context_id, context["wrapped_dek"])
@@ -322,6 +328,7 @@ class PrivacyEngine:
                     "context_id": context_id, "policy_version": policy.version, "format": fmt,
                     "payload": protected, "expires_at": _utc(context["expires_at"]), "stats": stats,
                 }
+            await asyncio.sleep(0.001 * (attempt + 1))
         raise PrivacyError("Concurrent context update conflict: retry the request")
 
     async def decode(self, principal: Principal, *, context_id: str, fmt: str, payload: Any,
