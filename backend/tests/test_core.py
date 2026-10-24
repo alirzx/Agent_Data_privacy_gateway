@@ -173,6 +173,55 @@ def test_low_signal_multivalue_fragments_rejected():
     assert '\\' not in values
 
 
+def test_splunk_csv_double_quoted_failed_users_in_text():
+    """Regression: CSV/_raw failed_user=\"\"SAM\"\" and bare dotted SAMs must encode as USER."""
+    detector = Detector(PolicyRegistry(ROOT / 'profiles').get('generic-v1'))
+    # Synthetic notables export fragment (not production customer data).
+    csv_fragment = (
+        'failed_user=""AB.TESTUSER"", failed_user=""XY.ANALYST"", '
+        'failed_user=""LAB-PRIMARY$"", failed_user=""PPC-LAB$"", '
+        'src=""::FFFF:10.0.0.50"", user_dc=""16""\n'
+        '16,"AB.TESTUSER\nXY.ANALYST\nLAB-PRIMARY$\nPPC-LAB$",28,'
+    )
+    found = detector.discover(csv_fragment)
+    values = {entry.value for entry in found}
+    assert 'AB.TESTUSER' in values
+    assert 'XY.ANALYST' in values
+    assert 'LAB-PRIMARY$' in values
+    assert 'PPC-LAB$' in values
+    assert all(entry.kind == 'USER' for entry in found if entry.value in {
+        'AB.TESTUSER', 'XY.ANALYST', 'LAB-PRIMARY$', 'PPC-LAB$',
+    })
+    # Count fields and DNS/file-like two-labels must not become USER via free text.
+    assert '16' not in values
+    assert not any(entry.value == 'example.com' for entry in detector.discover('visit example.com now'))
+    assert not any(entry.value == 'payload.ps1' for entry in detector.discover('dropped payload.ps1'))
+
+
+@pytest.mark.asyncio
+async def test_splunk_csv_text_encode_scrubs_dotted_users():
+    engine = PrivacyEngine(
+        crypto=Crypto(os.urandom(32)),
+        store=MemoryBlobStore(),
+        policies=PolicyRegistry(ROOT / 'profiles'),
+    )
+    principal = Principal('a', frozenset(), True, False)
+    context = await engine.create_context(principal, tenant_id=None, profile='generic-v1')
+    text = (
+        'search_name="ESCU - Detect Password Spray" '
+        'failed_user=""AB.TESTUSER"", failed_user=""LAB-ISE$"", '
+        'risk_message="source sprayed AB.TESTUSER and XY.ANALYST"'
+    )
+    protected = await engine.encode(
+        principal, context_id=context['context_id'], fmt='text', payload=text, registrations=[],
+    )
+    blob = protected['payload']
+    assert 'AB.TESTUSER' not in blob
+    assert 'XY.ANALYST' not in blob
+    assert 'LAB-ISE$' not in blob
+    assert 'USER_' in blob
+
+
 @pytest.mark.asyncio
 async def test_bare_user_does_not_splice_windows_principal():
     engine = PrivacyEngine(

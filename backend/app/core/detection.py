@@ -19,7 +19,7 @@ from app.models import Registration
 IP_FIELDS = {"src_ip", "source_ip", "source_address", "source_addr", "dst_ip", "dest_ip", "destination_ip", "destination_address", "client_ip", "remote_ip", "local_ip", "ip", "ip_address", "clientip"}
 HOST_FIELDS = {
     "host", "hostname", "host_name", "device_name", "computer_name", "machine_name", "endpoint_name",
-    "dvc", "dest_nt_host", "splunk_server", "risk_object_system", "success_dc", "failed_dc", "user_dc",
+    "dvc", "dest_nt_host", "splunk_server", "risk_object_system",
     "_risk_system", "risk_system",
 }
 USER_FIELDS = {
@@ -102,11 +102,32 @@ SECRET_ASSIGN_RE = re.compile(r"(?i)(?<![\w])(?:password|passwd|passphrase|api[_
 BEARER_RE = re.compile(r"(?i)\b(?:authorization|proxy-authorization)\s*:\s*(?:bearer|basic)\s+(?P<secret>[^\s,;\"'}]+)")
 # Keep label extraction conservative: bare src/dest in prose often bind to
 # stopwords (e.g. "src: SIEM") and must not become free-text HOST tokens.
+# Splunk CSV/_raw often doubles quotes: failed_user=""alice.j"" — accept 1–2 quotes.
 TEXT_LABEL_RE = re.compile(
     r"(?i)(?<!\w)(?P<label>src_ip|dst_ip|source_ip|dest_ip|ip_address|hostname|host|username|user|"
-    r"failed_user|tried_accounts|device_name|asset_id|email|principal|splunk_server)\s*[:=]\s*"
-    r"[\"']?(?P<value>[^\s,;\"'}]+)"
+    r"failed_user|tried_accounts|src_user|dest_user|samaccountname|device_name|asset_id|email|"
+    r"principal|splunk_server)\s*[:=]\s*"
+    r"(?:\"{1,2}(?P<qvalue>[^\"]+)\"{1,2}|'(?P<svalue>[^']+)'|(?P<value>[^\s,;\"'}]+))"
 )
+# Two-label organizational SAM (FA.ZARE, alice.j) — not FQDNs or file extensions.
+DOTTED_SAM_RE = re.compile(
+    r"(?<![\w.\\/])"
+    r"(?P<sam>[A-Za-z][A-Za-z0-9]{0,31}\.[A-Za-z][A-Za-z0-9_-]{0,63})"
+    r"(?!\.[A-Za-z0-9-])"
+    r"(?![\w.\\/])"
+)
+# Active Directory machine / service accounts ending with $.
+AD_MACHINE_ACCOUNT_RE = re.compile(
+    r"(?<![\w.\\])(?P<account>[A-Za-z][A-Za-z0-9._-]{1,62}\$)(?![\w])"
+)
+# Second label of dotted SAM that looks like DNS TLD / file extension / env suffix.
+DOTTED_SAM_REJECT_SUFFIXES = frozenset({
+    "com", "org", "net", "edu", "gov", "io", "co", "uk", "us", "de", "fr", "info", "biz",
+    "local", "lan", "lab", "corp", "internal", "intranet", "test", "dev", "prod", "svc", "int",
+    "exe", "dll", "ps1", "bat", "cmd", "msi", "sys", "log", "csv", "json", "xml", "txt",
+    "yml", "yaml", "png", "jpg", "gif", "pdf", "doc", "zip", "rar", "tmp", "bak", "cfg",
+    "ini", "conf", "html", "js", "ts", "py", "sh", "so", "jar",
+})
 
 
 def normalize_key(raw: str) -> str:
@@ -117,10 +138,20 @@ def expand_multivalue(kind: str, value: str) -> list[str]:
     """Split Splunk-style multivalue identity fields without inventing free-text tokens."""
     if kind not in MULTIVALUE_KINDS:
         return [value]
-    if "\n" not in value and "\r" not in value:
+    if "\n" not in value and "\r" not in value and ";" not in value:
         return [value]
-    parts = [part.strip() for part in re.split(r"[\r\n]+", value) if part.strip()]
+    parts = [part.strip() for part in re.split(r"[\r\n;]+", value) if part.strip()]
     return parts if len(parts) > 1 else [value]
+
+
+def is_dotted_sam_account(value: str) -> bool:
+    """True for high-confidence two-label organizational usernames (not FQDN/file)."""
+    trimmed = value.strip()
+    match = DOTTED_SAM_RE.fullmatch(trimmed)
+    if not match:
+        return False
+    suffix = trimmed.rsplit(".", 1)[-1].casefold()
+    return suffix not in DOTTED_SAM_REJECT_SUFFIXES
 
 
 def is_low_signal_identity(kind: str, value: str) -> bool:
@@ -164,6 +195,8 @@ def infer_identity_kind(value: str) -> str | None:
     if EMAIL_RE.fullmatch(trimmed):
         return "EMAIL"
     if "\\" in trimmed and not trimmed.startswith("\\\\") and not re.match(r"^[A-Za-z]:\\", trimmed):
+        return "USER"
+    if AD_MACHINE_ACCOUNT_RE.fullmatch(trimmed) or is_dotted_sam_account(trimmed):
         return "USER"
     if WIN_PATH_RE.fullmatch(trimmed) or UNC_PATH_RE.fullmatch(trimmed) or UNIX_PATH_RE.fullmatch(trimmed):
         return "PATH"
@@ -423,6 +456,12 @@ class Detector:
             add("EMAIL", match.group())
         for match in WINDOWS_USER_RE.finditer(text):
             add("USER", match.group())
+        for match in AD_MACHINE_ACCOUNT_RE.finditer(text):
+            add("USER", match.group("account"))
+        for match in DOTTED_SAM_RE.finditer(text):
+            sam = match.group("sam")
+            if is_dotted_sam_account(sam):
+                add("USER", sam)
         for pattern in (WIN_PATH_RE, UNC_PATH_RE, UNIX_PATH_RE):
             for match in pattern.finditer(text):
                 add("PATH", match.group())
@@ -458,8 +497,12 @@ class Detector:
                 add("HOST", match.group())
         for match in TEXT_LABEL_RE.finditer(text):
             label = normalize_key(match.group("label"))
-            value = match.group("value")
+            value = match.group("qvalue") or match.group("svalue") or match.group("value")
+            if not value:
+                continue
             kind = self._resolve_kind((label,), None, value)
             if kind:
-                add(kind, value, "context-label")
+                for piece in expand_multivalue(kind, value):
+                    piece_kind = self._resolve_kind((label,), None, piece) or kind
+                    add(piece_kind, piece, "context-label")
         return list({(c.kind, c.value): c for c in found}.values())
