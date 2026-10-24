@@ -518,6 +518,14 @@ h1 span { color: var(--soorin-cyan); }
   color: #fff;
   background: var(--soorin-navy);
 }
+.shielded-output {
+  display: block;
+  width: 100%;
+  height: 300px;
+  min-height: 190px;
+  background: #fbfdfe;
+  border-top: 0;
+}
 .editor-card textarea {
   resize: vertical;
   display: block;

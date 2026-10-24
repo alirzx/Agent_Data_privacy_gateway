@@ -12,6 +12,7 @@ import {
   transformTextChunked,
   MAX_SINGLE_SHOT_BYTES,
 } from './chunked.js';
+import { ShieldedOutput } from './shielded-output.jsx';
 
 const PREVIEW_CHARS = 6000;
 const MAX_INLINE_CHARS = 512 * 1024;
@@ -125,7 +126,9 @@ function App() {
   const outputFull = useRef('');
   const outputBlob = useRef(null);
   const outputParts = useRef([]);
-  const outputAreaRef = useRef(null);
+  const streamPending = useRef('');
+  const streamFlushTimer = useRef(null);
+  const streamMeta = useRef({ index: 0, total: 0, bytesOut: 0, context_id: null });
   const inputFile = useRef(null);
   const fileInputRef = useRef(null);
 
@@ -144,7 +147,30 @@ function App() {
     setOutput(text && text.length > MAX_INLINE_CHARS ? previewText(text) : (text || ''));
   };
 
+  const flushStreamPending = () => {
+    if (streamFlushTimer.current) {
+      clearTimeout(streamFlushTimer.current);
+      streamFlushTimer.current = null;
+    }
+    const batch = streamPending.current;
+    if (!batch) return;
+    streamPending.current = '';
+    const { index, total, bytesOut, context_id } = streamMeta.current;
+    if (context_id) setContext(context_id);
+    setOutput((prev) => {
+      const next = prev + batch;
+      if (next.length <= STREAM_DISPLAY_CHARS) return next;
+      const tail = next.slice(-STREAM_DISPLAY_CHARS);
+      return `… [live stream — showing last ${formatBytes(STREAM_DISPLAY_CHARS)} of ${formatBytes(bytesOut)}]\n` + tail;
+    });
+    setOutputLabel(`Streaming chunk ${index}/${total} · ${formatBytes(bytesOut)}`);
+    outputFull.current = (outputFull.current + batch).slice(0, STREAM_DISPLAY_CHARS * 2);
+  };
+
   const beginStreamOutput = () => {
+    if (streamFlushTimer.current) clearTimeout(streamFlushTimer.current);
+    streamFlushTimer.current = null;
+    streamPending.current = '';
     outputParts.current = [];
     outputFull.current = '';
     outputBlob.current = null;
@@ -155,20 +181,15 @@ function App() {
 
   const appendStreamChunk = ({ piece, index, total, context_id, bytesOut }) => {
     outputParts.current.push(piece);
-    if (context_id) setContext(context_id);
-    setOutput((prev) => {
-      const next = prev + piece;
-      if (next.length <= STREAM_DISPLAY_CHARS) return next;
-      // Keep a live tail so the panel still updates while the full Blob grows.
-      const tail = next.slice(-STREAM_DISPLAY_CHARS);
-      return `… [live stream — showing last ${formatBytes(STREAM_DISPLAY_CHARS)} of ${formatBytes(bytesOut)}]\n` + tail;
-    });
-    setOutputLabel(`Streaming chunk ${index}/${total} · ${formatBytes(bytesOut)}`);
-    outputFull.current = (outputFull.current + piece).slice(0, STREAM_DISPLAY_CHARS * 2);
-    requestAnimationFrame(() => {
-      const el = outputAreaRef.current;
-      if (el) el.scrollTop = el.scrollHeight;
-    });
+    streamPending.current += piece;
+    streamMeta.current = { index, total, bytesOut, context_id };
+    // Throttle React/DOM writes — extension content scripts crash if we mutate every chunk.
+    if (!streamFlushTimer.current) {
+      streamFlushTimer.current = setTimeout(() => {
+        streamFlushTimer.current = null;
+        flushStreamPending();
+      }, 350);
+    }
   };
 
   useEffect(()=>{
@@ -263,6 +284,7 @@ function App() {
         };
       }
       if (generation !== runGeneration.current) return;
+      flushStreamPending();
       const finalBlob = result.payloadBlob
         || new Blob(outputParts.current, { type: 'text/plain;charset=utf-8' });
       startTransition(() => {
@@ -283,6 +305,7 @@ function App() {
       });
     } catch (err) {
       if (generation !== runGeneration.current) return;
+      flushStreamPending();
       startTransition(() => {
         setError(err.message || 'Unexpected request failure.');
         adoptOutput('', null);
@@ -453,12 +476,8 @@ function App() {
               </div>
               <span className="editor-number">02 / OUTPUT</span>
             </div>
-            <textarea
-              ref={outputAreaRef}
-              readOnly
+            <ShieldedOutput
               value={output}
-              spellCheck="false"
-              aria-label="Protected output"
               placeholder={operation==='encode'?'Your tokenized payload will appear here…':'Your decoded response will appear here…'}
             />
             <div className="editor-footer">
