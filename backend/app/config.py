@@ -71,8 +71,9 @@ class Settings:
             profile_dir=profiles,
             dev_mode=dev,
             ui_enabled=ui_enabled,
-            max_payload_bytes=int(os.getenv("DLP_MAX_PAYLOAD_BYTES", "1048576")),
-            max_entries=int(os.getenv("DLP_MAX_ENTRIES", "10000")),
+            # Default 32 MiB so large CSV/notable exports work; override down in locked-down envs.
+            max_payload_bytes=int(os.getenv("DLP_MAX_PAYLOAD_BYTES", "33554432")),
+            max_entries=int(os.getenv("DLP_MAX_ENTRIES", "100000")),
             default_ttl_seconds=int(os.getenv("DLP_CONTEXT_TTL", "3600")),
             max_ttl_seconds=int(os.getenv("DLP_MAX_CONTEXT_TTL", "86400")),
             cors_origins=tuple(x.strip() for x in os.getenv("DLP_CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",") if x.strip()) if dev else (),

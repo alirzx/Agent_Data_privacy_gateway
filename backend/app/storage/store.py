@@ -69,7 +69,13 @@ class RedisBlobStore:
     def __init__(self, url: str):
         import redis.asyncio as redis
 
-        self._client = redis.from_url(url, decode_responses=False, socket_connect_timeout=2, socket_timeout=3)
+        # Large context blobs (multi-MB CSV encodes) need longer socket timeouts.
+        self._client = redis.from_url(
+            url,
+            decode_responses=False,
+            socket_connect_timeout=5,
+            socket_timeout=120,
+        )
 
     async def get(self, key: str) -> bytes | None:
         return await self._client.get(key)

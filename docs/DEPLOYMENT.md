@@ -28,8 +28,8 @@ Do not use the bundled Docker Compose as an unmodified production deployment. Re
 | `DLP_PROFILE_DIR` | NO | YAML profiles directory. Set `/opt/dlp/profiles` in container. |
 | `DLP_CONTEXT_TTL` | NO | Default 3600 seconds. |
 | `DLP_MAX_CONTEXT_TTL` | NO | Maximum 86400 seconds; must be >= default. |
-| `DLP_MAX_ENTRIES` | NO | Maximum 10000 encrypted mapping entries/context. |
-| `DLP_MAX_PAYLOAD_BYTES` | NO | Default 1 MiB; also enforce ingress body size. |
+| `DLP_MAX_ENTRIES` | NO | Maximum encrypted mapping entries/context (default 100000; compose sets the same). |
+| `DLP_MAX_PAYLOAD_BYTES` | NO | Default 32 MiB for large CSV/text exports; also enforce ingress body size. |
 | `DLP_CORS_ORIGINS` | Dev only | Allowed React dev origins, not `*`. |
 
 ## Service client setup

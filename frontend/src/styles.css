@@ -565,6 +565,17 @@ h1 span { color: var(--soorin-cyan); }
   font-weight: 700;
 }
 .editor-footer button:hover { color: var(--soorin-cyan); }
+.editor-footer-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.editor-footer-actions button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
 .dot-blue,
 .dot-green {
   width: 6px;

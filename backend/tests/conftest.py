@@ -25,7 +25,7 @@ def settings():
              "tenants": ["tenant-1"], "allow_tenantless": True, "allow_secret_decode": True},
         ),
         store_backend="memory", redis_url="", profile_dir=ROOT / "profiles", dev_mode=True,
-        ui_enabled=False, max_payload_bytes=1_048_576, max_entries=1000,
+        ui_enabled=False, max_payload_bytes=1_048_576, max_entries=1000,  # keep tight in unit tests
         default_ttl_seconds=3600, max_ttl_seconds=86400, cors_origins=(),
         demo_api_key=None,
     )

@@ -8,9 +8,16 @@ RUN npm run build
 FROM python:3.12-slim AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PYTHONPATH=/opt/dlp/backend DLP_PROFILE_DIR=/opt/dlp/profiles
 WORKDIR /opt/dlp
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
 COPY backend/pyproject.toml ./backend/pyproject.toml
 COPY backend/app/ ./backend/app/
-RUN pip install --no-cache-dir ./backend && useradd --create-home --uid 10001 --shell /usr/sbin/nologin dlp
+# Preinstall build tooling in the image env; isolated PEP517 builds often fail
+# when the builder cannot reach PyPI for setuptools (versions: none).
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
+ && pip install --no-cache-dir --no-build-isolation ./backend \
+ && useradd --create-home --uid 10001 --shell /usr/sbin/nologin dlp
 COPY profiles/ ./profiles/
 COPY --from=ui-build /ui/dist ./frontend/dist/
 USER 10001:10001
