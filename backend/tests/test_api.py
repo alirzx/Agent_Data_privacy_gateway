@@ -147,6 +147,16 @@ def test_deterministic_tenant_aliases_and_cross_tenant_isolation(client, auth):
     assert denied.status_code==403
 
 
+def test_credential_aliases_stable_within_tenant(client, auth):
+    first, second = create(client, auth), create(client, auth)
+    payload = {"password": "SyntheticSecretForDemo", "user": "EXAMPLE\\analyst"}
+    a = encode(client, auth, first, payload)["payload"]
+    b = encode(client, auth, second, payload)["payload"]
+    assert a["password"] == b["password"]
+    assert a["user"] == b["user"]
+    assert a["password"].startswith("CRED_PASSWORD_")
+
+
 def test_context_owner_not_tenant_field_is_authoritative(client, auth):
     ctx=create(client,auth)
     other={'Authorization':'Bearer test-soc-key'}

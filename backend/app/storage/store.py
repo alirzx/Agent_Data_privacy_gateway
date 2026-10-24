@@ -1,4 +1,4 @@
-"""Encrypted blob persistence with atomic compare-and-swap; no plaintext Redis mappings."""
+"""Encrypted context blobs plus opaque alias-registry entries; never store plaintext originals."""
 from __future__ import annotations
 
 import asyncio
@@ -12,6 +12,7 @@ class Conflict(Exception):
 class BlobStore(Protocol):
     async def get(self, key: str) -> bytes | None: ...
     async def create(self, key: str, value: bytes, ttl: int) -> bool: ...
+    async def put(self, key: str, value: bytes, ttl: int) -> None: ...
     async def cas(self, key: str, original: bytes, value: bytes, ttl: int) -> bool: ...
     async def delete(self, key: str) -> None: ...
     async def ping(self) -> bool: ...
@@ -42,6 +43,10 @@ class MemoryBlobStore:
             self._items[key] = (value, asyncio.get_running_loop().time() + ttl)
             return True
 
+    async def put(self, key: str, value: bytes, ttl: int) -> None:
+        async with self._lock:
+            self._items[key] = (value, asyncio.get_running_loop().time() + ttl)
+
     async def cas(self, key: str, original: bytes, value: bytes, ttl: int) -> bool:
         async with self._lock:
             current = self._items.get(key)
@@ -71,6 +76,9 @@ class RedisBlobStore:
 
     async def create(self, key: str, value: bytes, ttl: int) -> bool:
         return bool(await self._client.set(key, value, ex=ttl, nx=True))
+
+    async def put(self, key: str, value: bytes, ttl: int) -> None:
+        await self._client.set(key, value, ex=ttl)
 
     async def cas(self, key: str, original: bytes, value: bytes, ttl: int) -> bool:
         from redis.exceptions import WatchError

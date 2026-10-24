@@ -1,10 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState, startTransition } from 'react';
 import {
   ShieldCheck, LockKeyhole, Activity, Boxes, Fingerprint, Settings2,
   ArrowRightLeft, ArrowUpRight, Copy, Check, RotateCcw, Play, LoaderCircle,
-  Eye, EyeOff, ChevronDown, TerminalSquare, CircleHelp, FileJson2,
-  AlertCircle, CheckCircle2, Server, Workflow, Sparkles, Database, KeyRound,
-  ExternalLink, Braces, Radio, Info, Code2, CheckCheck
+  Eye, EyeOff, ChevronDown, FileJson2,
+  AlertCircle, CheckCircle2, Database, KeyRound,
+  Radio, Info, Code2, Workflow
 } from 'lucide-react';
 
 const sample = JSON.stringify({
@@ -62,7 +62,7 @@ function App() {
   const [operation,setOperation] = useState('encode');
   const [format,setFormat] = useState('json');
   const [profile,setProfile] = useState('agentic-soc-v1');
-  const [tenant,setTenant] = useState('');
+  const [tenant,setTenant] = useState('demo');
   const [context,setContext] = useState('');
   const [apiKey,setApiKey] = useState('');
   const [keyBound,setKeyBound] = useState(false);
@@ -76,6 +76,7 @@ function App() {
   const [health,setHealth] = useState('checking');
   const [tab,setTab] = useState('workspace');
   const [lastRun,setLastRun] = useState(null);
+  const runGeneration = useRef(0);
 
   useEffect(()=>{
     let active = true;
@@ -95,26 +96,50 @@ function App() {
   },[]);
 
   const execute = async () => {
-    setBusy(true);setError('');setStats(null);setCopied(false);
+    const generation = ++runGeneration.current;
+    setBusy(true);
+    setError('');
+    setCopied(false);
     try {
-      const payload=parsing(input,format);
+      const payload = parsing(input, format);
       let result;
-      if(operation==='encode') {
-        result=await callApi('/v1/encode',apiKey,{
-          context_id:context || null,profile,tenant_id:tenant.trim()||null,
-          purpose:'llm-egress',format,payload
+      if (operation === 'encode') {
+        result = await callApi('/v1/encode', apiKey, {
+          context_id: context || null,
+          profile,
+          tenant_id: tenant.trim() || null,
+          purpose: 'llm-egress',
+          format,
+          payload
         });
-        setContext(result.context_id);
       } else {
-        if(!context.trim())throw new Error('Enter the Context ID from a previous encoding operation.');
-        result=await callApi('/v1/decode',apiKey,{
-          context_id:context,format,payload,purpose:'llm-response',reveal_credentials:false
+        if (!context.trim()) throw new Error('Enter the Context ID from a previous encoding operation.');
+        result = await callApi('/v1/decode', apiKey, {
+          context_id: context,
+          format,
+          payload,
+          purpose: 'llm-response',
+          reveal_credentials: false
         });
       }
-      setOutput(jsonPretty(result.payload,format));setStats(result.stats);
-      setLastRun(new Date().toLocaleTimeString());
-    } catch(err){setError(err.message||'Unexpected request failure.');setOutput('');}
-    finally{setBusy(false);}
+      if (generation !== runGeneration.current) return;
+      startTransition(() => {
+        if (operation === 'encode') setContext(result.context_id);
+        setOutput(jsonPretty(result.payload, format));
+        setStats(result.stats);
+        setLastRun(new Date().toLocaleTimeString());
+        setError('');
+      });
+    } catch (err) {
+      if (generation !== runGeneration.current) return;
+      startTransition(() => {
+        setError(err.message || 'Unexpected request failure.');
+        setOutput('');
+        setStats(null);
+      });
+    } finally {
+      if (generation === runGeneration.current) setBusy(false);
+    }
   };
 
   const reset=()=>{setInput(format==='text'?'':sample);setOutput('');setError('');setStats(null);setContext('');};
@@ -153,7 +178,7 @@ function App() {
           <div className="control-grid">
             <label className="field"><span>Privacy profile</span><div className="select-wrap"><select value={profile} onChange={e=>setProfile(e.target.value)}>{profiles.map(p=><option key={p.value} value={p.value}>{p.label}</option>)}</select><ChevronDown size={16}/></div></label>
             <label className="field"><span>Input format</span><div className="select-wrap"><select value={format} onChange={e=>switchFormat(e.target.value)}><option value="json">Structured JSON</option><option value="text">Plain text</option><option value="messages">LLM messages</option></select><ChevronDown size={16}/></div></label>
-            <label className="field"><span>Tenant ID <em>(optional)</em></span><input spellCheck="false" value={tenant} onChange={e=>setTenant(e.target.value)} placeholder="Tenantless context"/></label>
+            <label className="field"><span>Tenant ID <em>(stable aliases)</em></span><input spellCheck="false" value={tenant} onChange={e=>setTenant(e.target.value)} placeholder="Same tenant → same aliases"/></label>
             <label className="field"><span>Development API key {keyBound?<em>(auto-connected)</em>:null}</span><div className="password-wrap"><input type={visibleKey?'text':'password'} autoComplete="off" spellCheck="false" value={apiKey} readOnly={keyBound} onChange={e=>{setApiKey(e.target.value);setKeyBound(false);}} placeholder={keyBound?'Connected from gateway .env':'Paste your local API key'}/><button title="Show/hide local key" onClick={()=>setVisibleKey(v=>!v)} type="button">{visibleKey?<EyeOff size={16}/>:<Eye size={16}/>}</button></div></label>
           </div>
           <div className="context-row"><div><Radio size={15}/><b>Active privacy context</b><span>Context-scoped, time-limited mappings</span></div><input aria-label="Privacy context ID" value={context} onChange={e=>setContext(e.target.value)} placeholder="Created automatically on first encode" spellCheck="false"/></div>
@@ -164,11 +189,43 @@ function App() {
           <div className="direction-float"><button title="Swap direction and use output as input" onClick={switchDirection}><ArrowRightLeft size={18}/></button></div>
           <div className="editor-card"><div className="editor-header"><div className="editor-label"><span className="editor-icon violet"><ShieldCheck size={17}/></span><div><strong>{operation==='encode'?'Protected output':'Rehydrated output'}</strong><small>{operation==='encode'?'Provider-safe aliases':'Locally restored identity values'}</small></div></div><span className="editor-number">02 / OUTPUT</span></div><textarea readOnly value={output} spellCheck="false" aria-label="Protected output" placeholder={operation==='encode'?'Your tokenized payload will appear here…':'Your decoded response will appear here…'}/><div className="editor-footer"><div><span className="dot-green"/>{output?'Transformation completed':'Awaiting transformation'}</div><button onClick={copy}>{copied?<Check size={14}/>:<Copy size={14}/>} {copied?'Copied':'Copy output'}</button></div></div>
         </section>
-        <div className="action-row"><div className="tip"><Info size={16}/><span>Credential aliases are not revealed by standard decode.</span></div><button className="execute" onClick={execute} disabled={busy}>{busy?<LoaderCircle size={18} className="spin"/>:<Play size={18} fill="currentColor"/>}{busy?'Processing…':operation==='encode'?'Protect payload':'Rehydrate payload'} <ArrowUpRight size={17}/></button></div>
-        {error&&<div role="alert" className="alert error"><AlertCircle size={18}/><div><strong>Request unsuccessful</strong><span>{error}</span></div><button onClick={()=>setError('')}>×</button></div>}
-        {stats&&<div className="result-bar"><div className="result-title"><CheckCircle2 size={19}/><div><strong>Transformation successful</strong><span>Last processed {lastRun} · Context <code>{context.slice(0,19)}…</code></span></div></div><div className="result-metrics">{Object.entries(stats).map(([k,v])=><div key={k}><strong>{v}</strong><span>{k.replaceAll('_',' ')}</span></div>)}</div></div>}
+        <div className="action-row">
+          <div className="tip"><Info size={16}/><span>Credential aliases are not revealed by standard decode.</span></div>
+          <button className="execute" type="button" onClick={execute} disabled={busy} aria-busy={busy}>
+            <span className="execute-icon" aria-hidden="true">
+              {busy ? <LoaderCircle size={18} className="spin"/> : <Play size={18} fill="currentColor"/>}
+            </span>
+            <span className="execute-label">{busy ? 'Processing…' : (operation === 'encode' ? 'Protect payload' : 'Rehydrate payload')}</span>
+            <span className="execute-arrow" aria-hidden="true"><ArrowUpRight size={17}/></span>
+          </button>
+        </div>
+        <div className="studio-status" aria-live="polite">
+          {error ? (
+            <div role="alert" className="alert error" key="studio-error">
+              <AlertCircle size={18}/>
+              <div><strong>Request unsuccessful</strong><span>{error}</span></div>
+              <button type="button" onClick={()=>setError('')}>×</button>
+            </div>
+          ) : null}
+          {stats ? (
+            <div className="result-bar" key="studio-stats">
+              <div className="result-title">
+                <CheckCircle2 size={19}/>
+                <div>
+                  <strong>Transformation successful</strong>
+                  <span>Last processed {lastRun} · Context <code>{(context || 'ctx').slice(0,19)}…</code></span>
+                </div>
+              </div>
+              <div className="result-metrics">
+                {Object.entries(stats).map(([k,v]) => (
+                  <div key={k}><strong>{v}</strong><span>{k.replaceAll('_',' ')}</span></div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+        </div>
         <footer className="footer"><span><ShieldCheck size={15}/> soorinsec.ir · Secure AI Infrastructure</span><span>Never expose production credentials in the browser console.</span></footer>
-      </div>:<div className="page guide-page"><div className="eyebrow">DEVELOPER RESOURCES</div><h1>Integration <span>Guide</span></h1><p className="subtitle">Connect any AI product through an authenticated privacy context and an explicit encode/decode boundary.</p><div className="guide-cards"><div><span className="guide-icon"><Code2/></span><h3>1. Create a context</h3><p>POST /v1/contexts</p><code>{'{"profile":"agentic-soc-v1","tenant_id":null}'}</code></div><div><span className="guide-icon"><LockKeyhole/></span><h3>2. Encode before egress</h3><p>POST /v1/encode</p><code>{'{"context_id":"ctx_...","format":"messages","payload":[...]}'}</code></div><div><span className="guide-icon"><ArrowRightLeft/></span><h3>3. Restore locally</h3><p>POST /v1/decode</p><code>{'{"context_id":"ctx_...","format":"text","payload":"..."}'}</code></div></div><div className="guide-tip"><Info size={19}/><div><b>Production integration</b><p>The browser key-input console is for local development only. Use the Python SDK with server-side credentials, TLS, trusted tenant identity and an outbound network egress guard in production.</p></div></div><button className="back-workspace" onClick={()=>setTab('workspace')}>Back to workspace <ArrowUpRight size={17}/></button></div>}
+      </div>:<div className="page guide-page"><div className="eyebrow">DEVELOPER RESOURCES</div><h1>Integration <span>Guide</span></h1><p className="subtitle">Connect any AI product through an authenticated privacy context and an explicit encode/decode boundary.</p><div className="guide-cards"><div><span className="guide-icon"><Code2/></span><h3>1. Create a context</h3><p>POST /v1/contexts</p><code>{'{"profile":"agentic-soc-v1","tenant_id":null}'}</code></div><div><span className="guide-icon"><LockKeyhole/></span><h3>2. Encode before egress</h3><p>POST /v1/encode</p><code>{'{"context_id":"ctx_...","format":"messages","payload":[...]}'}</code></div><div><span className="guide-icon"><ArrowRightLeft/></span><h3>3. Restore locally</h3><p>POST /v1/decode</p><code>{'{"context_id":"ctx_...","format":"text","payload":"..."}'}</code></div></div><div className="guide-tip"><Info size={19}/><div><b>Production integration</b><span className="guide-tip-body">The browser key-input console is for local development only. Use the Python SDK with server-side credentials, TLS, trusted tenant identity and an outbound network egress guard in production.</span></div></div><button className="back-workspace" onClick={()=>setTab('workspace')}>Back to workspace <ArrowUpRight size={17}/></button></div>}
     </main>
   </div>;
 }

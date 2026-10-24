@@ -196,6 +196,12 @@ def canonical(kind: str, value: str) -> str:
         return str(ipaddress.ip_address(value))
     if kind == "SUBNET":
         return str(ipaddress.ip_network(value, strict=False))
+    # JSON / Splunk escapes often yield DOMAIN\\user; collapse to one separator so
+    # registry digests and aliases stay stable across spellings of the same principal.
+    if kind == "USER" and "\\" in value and not value.startswith("\\\\") and not re.match(r"^[A-Za-z]:\\", value):
+        domain, _sep, account = value.partition("\\")
+        account = account.lstrip("\\")
+        return f"{domain.casefold()}\\{account.casefold()}"
     if kind in {"HOST", "USER", "EMAIL", "DOMAIN", "MAC", "ASSET", "IP_OPAQUE", "TICKET", "CASE", "PHONE", "EMPLOYEE_ID", "USER_SID", "ORG_ID", "AD_GROUP", "CLOUD_RESOURCE", "DEVICE_SERIAL", "SPLUNK_INDEX"}:
         return value.rstrip(".").casefold()
     return value

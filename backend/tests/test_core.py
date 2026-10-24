@@ -292,7 +292,7 @@ async def test_context_expiration_uses_server_time(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_canonical_token_stability_context_scoped_credential():
+async def test_canonical_token_stability_within_tenant_includes_credentials():
     engine=PrivacyEngine(crypto=Crypto(os.urandom(32)),store=MemoryBlobStore(),policies=PolicyRegistry(ROOT/'profiles'))
     principal=Principal('a',frozenset({'corp'}),True,False)
     first=await engine.create_context(principal,tenant_id='corp',profile='generic-v1')
@@ -301,4 +301,48 @@ async def test_canonical_token_stability_context_scoped_credential():
     a=await engine.encode(principal,context_id=first['context_id'],fmt='json',payload=original,registrations=[])
     b=await engine.encode(principal,context_id=second['context_id'],fmt='json',payload=original,registrations=[])
     assert a['payload']['hostname']==b['payload']['hostname']
-    assert a['payload']['password'] != b['payload']['password']
+    assert a['payload']['password']==b['payload']['password']
+
+
+@pytest.mark.asyncio
+async def test_alias_registry_is_source_of_truth():
+    store=MemoryBlobStore()
+    engine=PrivacyEngine(crypto=Crypto(os.urandom(32)),store=store,policies=PolicyRegistry(ROOT/'profiles'))
+    principal=Principal('a',frozenset({'corp'}),True,False)
+    first=await engine.create_context(principal,tenant_id='corp',profile='generic-v1')
+    payload={'src_ip':'10.20.3.7','password':'SyntheticSecretForDemo'}
+    encoded=await engine.encode(principal,context_id=first['context_id'],fmt='json',payload=payload,registrations=[])
+    registry_keys=[key for key in store._items if key.startswith('dlp:v1:nsalias:')]
+    assert len(registry_keys) >= 2
+    for key in registry_keys:
+        await store.delete(key)
+    second=await engine.create_context(principal,tenant_id='corp',profile='generic-v1')
+    again=await engine.encode(principal,context_id=second['context_id'],fmt='json',payload=payload,registrations=[])
+    assert again['payload']['src_ip'] != encoded['payload']['src_ip']
+    assert again['payload']['password'] != encoded['payload']['password']
+
+
+@pytest.mark.asyncio
+async def test_windows_principal_json_escape_shares_registry_alias():
+    engine=PrivacyEngine(crypto=Crypto(os.urandom(32)),store=MemoryBlobStore(),policies=PolicyRegistry(ROOT/'profiles'))
+    principal=Principal('a',frozenset({'corp'}),True,False)
+    ctx=await engine.create_context(principal,tenant_id='corp',profile='agentic-soc-v1')
+    inner={'user':'CORP\\alice','hostname':'dc01.corp.example','description':'Windows Registry Change'}
+    messages=[{'role':'user','content':json.dumps(inner)}]
+    encoded=await engine.encode(principal,context_id=ctx['context_id'],fmt='messages',payload=messages,registrations=[])
+    assert 'CORP\\\\alice' not in encoded['payload'][0]['content']
+    restored=await engine.decode(principal,context_id=ctx['context_id'],fmt='messages',payload=encoded['payload'])
+    assert json.loads(restored['payload'][0]['content'])==inner
+
+
+@pytest.mark.asyncio
+async def test_tenantless_aliases_remain_context_isolated():
+    engine=PrivacyEngine(crypto=Crypto(os.urandom(32)),store=MemoryBlobStore(),policies=PolicyRegistry(ROOT/'profiles'))
+    principal=Principal('a',frozenset(),True,False)
+    first=await engine.create_context(principal,tenant_id=None,profile='generic-v1')
+    second=await engine.create_context(principal,tenant_id=None,profile='generic-v1')
+    payload={'hostname':'dc01.corp.example','password':'synthetic-test-password'}
+    a=await engine.encode(principal,context_id=first['context_id'],fmt='json',payload=payload,registrations=[])
+    b=await engine.encode(principal,context_id=second['context_id'],fmt='json',payload=payload,registrations=[])
+    assert a['payload']['hostname']!=b['payload']['hostname']
+    assert a['payload']['password']!=b['payload']['password']

@@ -57,6 +57,17 @@ class PrivacyEngine:
             raise PrivacyError("Invalid context identifier")
         return "dlp:v1:ctx:" + context_id
 
+    def _registry_key(self, namespace: str, digest: str) -> str:
+        """Opaque namespace alias registry: digest → alias (never stores originals)."""
+        if not re.fullmatch(r"[a-f0-9]{64}", digest):
+            raise PrivacyError("Invalid alias registry digest")
+        ns_hash = hmac.new(
+            self.crypto.derive("alias-registry-ns"),
+            namespace.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        return f"dlp:v1:nsalias:{ns_hash}:{digest}"
+
     async def create_context(self, principal: Principal, *, tenant_id: str | None, profile: str,
                              ttl_seconds: int | None = None) -> dict:
         principal.authorize_tenant(tenant_id)
@@ -109,7 +120,44 @@ class PrivacyEngine:
         if fmt not in {"text", "json", "messages"}:
             raise PrivacyError("Unsupported format")
 
-    def _token(self, context: dict, dek: bytes, kind: str, original: str) -> str:
+    async def _resolve_alias(self, *, namespace: str, kind: str, canonical_value: str, prefix: str) -> str:
+        """First write wins in the durable registry; later encodes only read the stored alias."""
+        ns_digest = hmac.new(
+            self.crypto.derive("lookup:" + namespace),
+            f"{kind}\x00{canonical_value}".encode(),
+            hashlib.sha256,
+        ).hexdigest()
+        reg_key = self._registry_key(namespace, ns_digest)
+        stored = await self.store.get(reg_key)
+        if stored is not None:
+            try:
+                alias = stored.decode("ascii")
+            except UnicodeDecodeError as exc:
+                raise PrivacyError("Corrupt alias registry entry") from exc
+            if not KIND_RE.fullmatch(alias):
+                await self.store.delete(reg_key)
+            else:
+                await self.store.put(reg_key, stored, self.max_ttl)
+                return alias
+        candidate = f"{prefix}_{os.urandom(16).hex().upper()}"
+        if not KIND_RE.fullmatch(candidate):
+            raise PrivacyError("Generated alias failed validation")
+        payload = candidate.encode("ascii")
+        if await self.store.create(reg_key, payload, self.max_ttl):
+            return candidate
+        winner = await self.store.get(reg_key)
+        if winner is None:
+            raise PrivacyError("Alias registry race lost without winner")
+        try:
+            alias = winner.decode("ascii")
+        except UnicodeDecodeError as exc:
+            raise PrivacyError("Corrupt alias registry entry") from exc
+        if not KIND_RE.fullmatch(alias):
+            raise PrivacyError("Alias registry returned an invalid alias")
+        await self.store.put(reg_key, winner, self.max_ttl)
+        return alias
+
+    async def _token(self, context: dict, dek: bytes, kind: str, original: str) -> str:
         if kind == "IP":
             # A typed, malformed IP must remain opaque instead of leaking.
             kind = "IP_OPAQUE" if ip_kind(original) == "IP_OPAQUE" else "IP"
@@ -127,12 +175,12 @@ class PrivacyEngine:
         if len(context["items"]) >= self.max_entries:
             raise PrivacyError("Context mapping entry limit reached")
         prefix = ip_kind(original) if kind == "IP" else kind
-        if _is_secret(kind):
-            alias = f"{prefix}_{os.urandom(16).hex().upper()}"
-        else:
-            namespace_key = self.crypto.derive("token-namespace:" + context["namespace"])
-            token_payload = f"v1\x00{kind}\x00{canonical_value}".encode()
-            alias = f"{prefix}_{hmac.new(namespace_key, token_payload, hashlib.sha256).hexdigest()[:32].upper()}"
+        alias = await self._resolve_alias(
+            namespace=context["namespace"],
+            kind=kind,
+            canonical_value=canonical_value,
+            prefix=prefix,
+        )
         # Exact spelling of first registered occurrence is retained for authorized restore.
         context["items"][alias] = {
             "kind": kind,
@@ -141,12 +189,12 @@ class PrivacyEngine:
         context["index"][digest] = alias
         return alias
 
-    def _project(self, payload: Any, detector: Detector, context: dict, dek: bytes,
-                 registrations: list[Registration]) -> tuple[Any, dict[str, int]]:
+    async def _project(self, payload: Any, detector: Detector, context: dict, dek: bytes,
+                       registrations: list[Registration]) -> tuple[Any, dict[str, int]]:
         discovered = detector.discover(payload, registrations)
         pairs: list[tuple[str, str, str]] = []
         for item in discovered:
-            alias = self._token(context, dek, item.kind, item.value)
+            alias = await self._token(context, dek, item.kind, item.value)
             pairs.append((item.value, alias, item.kind))
             # Also replace its JSON-escaped spelling in serialized LLM messages.
             # A Windows identity CORP\alice is rendered as CORP\\alice in JSON.
@@ -263,7 +311,7 @@ class PrivacyEngine:
             context, previous = await self._load(principal, context_id)
             policy = self.policies.get(context["profile"])
             dek = self.crypto.unwrap_dek(context_id, context["wrapped_dek"])
-            protected, stats = self._project(payload, Detector(policy), context, dek, registrations)
+            protected, stats = await self._project(payload, Detector(policy), context, dek, registrations)
             context["revision"] += 1
             remain = context["expires_at"] - int(time.time())
             if remain <= 0:
