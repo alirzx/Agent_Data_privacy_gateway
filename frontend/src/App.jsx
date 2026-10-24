@@ -45,7 +45,17 @@ async function callApi(path, apiKey, payload) {
   return value;
 }
 
-function Logo(){return <div className="logo-mark"><ShieldCheck size={23} strokeWidth={2.1}/></div>}
+function Logo(){
+  return (
+    <div className="logo-mark" aria-hidden="true">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+        <path d="M4 7c5-5 11-5 16 0" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"/>
+        <path d="M6 12c3.5-3.5 8.5-3.5 12 0" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"/>
+        <path d="M9 17c2-2 4-2 6 0" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"/>
+      </svg>
+    </div>
+  );
+}
 function Tag({children,tone='muted'}){return <span className={'tag '+tone}>{children}</span>}
 
 function App() {
@@ -118,7 +128,7 @@ function App() {
 
   return <div className="app">
     <aside className="sidebar">
-      <div className="brand"><Logo/><div><b>SOORIN<span className="brand-dot">.</span></b><small>SECURITY PLATFORM</small></div></div>
+      <div className="brand"><Logo/><div><b>soorin<span className="brand-dot">sec</span></b><small>DATA PRIVACY GATEWAY</small></div></div>
       <div className="side-section-label">WORKSPACE</div>
       <button className={'nav-item '+(tab==='workspace'?'active':'')} onClick={()=>setTab('workspace')}><Boxes size={18}/> Privacy Workspace <span className="nav-arrow">›</span></button>
       <button className={'nav-item '+(tab==='guide'?'active':'')} onClick={()=>setTab('guide')}><Code2 size={18}/> Integration Guide</button>
@@ -135,8 +145,8 @@ function App() {
     <main className="main">
       <header className="topbar"><div className="breadcrumbs">Workspace <span>/</span> <b>{tab==='workspace'?'Privacy Engine':'Integration Guide'}</b></div><div className="top-right"><span className={'connection '+(health==='online'?'up':'down')}><i/>{health==='online'?'Gateway Online':health==='checking'?'Checking Gateway':'Gateway Offline'}</span><span className="vertical-rule"/><span className="version">v0.1.0</span></div></header>
       {tab==='workspace'?<div className="page">
-        <div className="eyebrow"><span className="tiny-cube">◆</span> DATA PROTECTION / SECURE EGRESS</div>
-        <div className="title-row"><div><h1>Data Privacy <span>Gateway</span></h1><p className="subtitle">Classify, tokenize and restore sensitive information with a secure, context-aware pipeline.</p></div><div className="title-lock"><ShieldCheck size={30}/><span>ZERO TRUST<br/><strong>BOUNDARY</strong></span></div></div>
+        <div className="eyebrow"><span className="tiny-cube">◆</span> SOORIN SECURITY · SECURE EGRESS</div>
+        <div className="title-row"><div><h1>Data Privacy <span>Gateway</span></h1><p className="subtitle">Classify, tokenize and restore sensitive identities with Soorin&apos;s secure, context-aware privacy boundary.</p></div><div className="title-lock"><ShieldCheck size={30}/><span>SOORIN<br/><strong>BOUNDARY</strong></span></div></div>
         <div className="stats-strip"><div><Fingerprint size={16}/><span>Semantic identity detection</span></div><i/><div><KeyRound size={16}/><span>HMAC tokenization</span></div><i/><div><LockKeyhole size={16}/><span>AES-GCM mapping vault</span></div><i/><div><Activity size={16}/><span>Auditable API</span></div></div>
         <section className="control-card">
           <div className="control-title"><div><Settings2 size={17}/> <b>Configuration</b></div><span>Development environment</span></div>
@@ -157,7 +167,7 @@ function App() {
         <div className="action-row"><div className="tip"><Info size={16}/><span>Credential aliases are not revealed by standard decode.</span></div><button className="execute" onClick={execute} disabled={busy}>{busy?<LoaderCircle size={18} className="spin"/>:<Play size={18} fill="currentColor"/>}{busy?'Processing…':operation==='encode'?'Protect payload':'Rehydrate payload'} <ArrowUpRight size={17}/></button></div>
         {error&&<div role="alert" className="alert error"><AlertCircle size={18}/><div><strong>Request unsuccessful</strong><span>{error}</span></div><button onClick={()=>setError('')}>×</button></div>}
         {stats&&<div className="result-bar"><div className="result-title"><CheckCircle2 size={19}/><div><strong>Transformation successful</strong><span>Last processed {lastRun} · Context <code>{context.slice(0,19)}…</code></span></div></div><div className="result-metrics">{Object.entries(stats).map(([k,v])=><div key={k}><strong>{v}</strong><span>{k.replaceAll('_',' ')}</span></div>)}</div></div>}
-        <footer className="footer"><span><ShieldCheck size={15}/> Soorin Security · Secure AI Infrastructure</span><span>Never expose production credentials in the browser console.</span></footer>
+        <footer className="footer"><span><ShieldCheck size={15}/> soorinsec.ir · Secure AI Infrastructure</span><span>Never expose production credentials in the browser console.</span></footer>
       </div>:<div className="page guide-page"><div className="eyebrow">DEVELOPER RESOURCES</div><h1>Integration <span>Guide</span></h1><p className="subtitle">Connect any AI product through an authenticated privacy context and an explicit encode/decode boundary.</p><div className="guide-cards"><div><span className="guide-icon"><Code2/></span><h3>1. Create a context</h3><p>POST /v1/contexts</p><code>{'{"profile":"agentic-soc-v1","tenant_id":null}'}</code></div><div><span className="guide-icon"><LockKeyhole/></span><h3>2. Encode before egress</h3><p>POST /v1/encode</p><code>{'{"context_id":"ctx_...","format":"messages","payload":[...]}'}</code></div><div><span className="guide-icon"><ArrowRightLeft/></span><h3>3. Restore locally</h3><p>POST /v1/decode</p><code>{'{"context_id":"ctx_...","format":"text","payload":"..."}'}</code></div></div><div className="guide-tip"><Info size={19}/><div><b>Production integration</b><p>The browser key-input console is for local development only. Use the Python SDK with server-side credentials, TLS, trusted tenant identity and an outbound network egress guard in production.</p></div></div><button className="back-workspace" onClick={()=>setTab('workspace')}>Back to workspace <ArrowUpRight size={17}/></button></div>}
     </main>
   </div>;
