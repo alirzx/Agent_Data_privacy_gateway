@@ -1,7 +1,9 @@
 /** Line-aware chunking so multi-GB CSV/text can be encoded without one huge request. */
 
-export const CHUNK_TARGET_BYTES = 4 * 1024 * 1024;
-export const MAX_SINGLE_SHOT_BYTES = 8 * 1024 * 1024;
+// Dense Splunk CSV: ~1 MiB encode ≈ 25s on the LAN gateway. Keep chunks small so
+// the first streamed output appears in a few seconds instead of minutes.
+export const CHUNK_TARGET_BYTES = 128 * 1024;
+export const MAX_SINGLE_SHOT_BYTES = 256 * 1024;
 
 /**
  * Split plain text on newlines into ~targetBytes chunks (never mid-line).

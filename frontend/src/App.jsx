@@ -236,7 +236,7 @@ function App() {
           profile,
           tenant: tenant.trim() || null,
           contextId: context || null,
-          knownTotal: file ? Math.max(1, Math.ceil(file.size / (4 * 1024 * 1024))) : null,
+          knownTotal: file ? Math.max(1, Math.ceil(file.size / (128 * 1024))) : null,
           onProgress: (p) => {
             if (generation === runGeneration.current) setProgress(p);
           },
@@ -456,7 +456,7 @@ function App() {
               placeholder="Paste JSON/text, or Upload CSV/TXT up to 1 GiB (chunked)"
             />
             <div className="editor-footer">
-              <div><span className="dot-blue"/> Up to 1 GiB via Upload · streamed in ~4 MiB line chunks</div>
+              <div><span className="dot-blue"/> Up to 1 GiB via Upload · streamed in ~128 KiB line chunks</div>
               <div className="editor-footer-actions">
                 <input ref={fileInputRef} type="file" accept=".csv,.txt,.json,.log,text/plain,text/csv,application/json" hidden onChange={onPickFile}/>
                 <button type="button" onClick={() => fileInputRef.current?.click()}><Upload size={14}/> Upload file</button>

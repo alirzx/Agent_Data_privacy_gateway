@@ -59,7 +59,7 @@ class PrivacyClient:
                    "purpose": "llm-response", "reveal_credentials": False})
 
     def encode_text_file(self, path: str, *, context_id: str | None = None, profile: str | None = None,
-                         tenant_id: str | None = None, chunk_bytes: int = 4_000_000,
+                         tenant_id: str | None = None, chunk_bytes: int = 128_000,
                          output_path: str | None = None) -> dict:
         """Encode a multi-GB plain-text/CSV file as line-complete chunks sharing one context."""
         import os
