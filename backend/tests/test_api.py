@@ -157,6 +157,21 @@ def test_credential_aliases_stable_within_tenant(client, auth):
     assert a["password"].startswith("CRED_PASSWORD_")
 
 
+def test_chunked_text_encode_reuses_context(client, auth):
+    """Multi-GB jobs are many small text encodes sharing one context_id."""
+    ctx = create(client, auth)
+    part_a = encode(client, auth, ctx, "host-a.corp.example online\n", "text")
+    part_b = encode(client, auth, ctx, "host-a.corp.example offline\n", "text")
+    assert part_a["context_id"] == part_b["context_id"] == ctx
+    assert "HOST_" in part_a["payload"]
+    # Same hostname across chunks must keep a stable alias within the context/tenant.
+    token = part_a["payload"].split()[0]
+    assert token in part_b["payload"]
+    restored = decode(client, auth, ctx, part_a["payload"] + part_b["payload"], "text")["payload"]
+    assert "host-a.corp.example online" in restored
+    assert "host-a.corp.example offline" in restored
+
+
 def test_context_owner_not_tenant_field_is_authoritative(client, auth):
     ctx=create(client,auth)
     other={'Authorization':'Bearer test-soc-key'}

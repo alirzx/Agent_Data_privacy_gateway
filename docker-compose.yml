@@ -7,9 +7,9 @@ services:
       DLP_STORE_BACKEND: redis
       DLP_REDIS_URL: redis://redis:6379/0
       DLP_PROFILE_DIR: /opt/dlp/profiles
-      # Large Splunk/CSV exports (≈15–20 MiB text) need headroom after JSON framing.
+      # Per-request cap (~32 MiB). Multi-GB files use client-side chunked encode.
       DLP_MAX_PAYLOAD_BYTES: "33554432"
-      DLP_MAX_ENTRIES: "100000"
+      DLP_MAX_ENTRIES: "1000000"
     ports:
       # Bind all interfaces so LAN VMs (e.g. http://192.168.x.x:8484) can reach the API/UI.
       # For internet-facing hosts prefer 127.0.0.1 + reverse proxy/TLS instead.
@@ -25,12 +25,12 @@ services:
     security_opt:
       - no-new-privileges:true
     pids_limit: 256
-    mem_limit: 2g
+    mem_limit: 4g
     cpus: 2.0
     networks: [edge, private]
   redis:
     image: redis:7.4-alpine
-    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1000", "--maxmemory", "512mb", "--maxmemory-policy", "noeviction"]
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1000", "--maxmemory", "2gb", "--maxmemory-policy", "noeviction"]
     volumes: ["dlp-redis:/data"]
     expose: ["6379"]
     restart: unless-stopped

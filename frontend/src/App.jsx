@@ -6,10 +6,17 @@ import {
   AlertCircle, CheckCircle2, Database, KeyRound,
   Radio, Info, Code2, Workflow
 } from 'lucide-react';
+import {
+  iterateFileLineChunks,
+  splitTextIntoLineChunks,
+  transformTextChunked,
+  MAX_SINGLE_SHOT_BYTES,
+} from './chunked.js';
 
 const PREVIEW_CHARS = 6000;
 const MAX_INLINE_CHARS = 512 * 1024;
-const MAX_FILE_BYTES = 32 * 1024 * 1024;
+/** Browser console accepts up to 1 GiB via streamed chunked encode (not one shot). */
+const MAX_FILE_BYTES = 1024 * 1024 * 1024;
 
 const sample = JSON.stringify({
   "src_ip": "10.20.3.7",
@@ -67,8 +74,8 @@ async function callApi(path, apiKey, payload) {
   }
   return value;
 }
-function downloadText(filename, text) {
-  const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+function downloadBlob(filename, data) {
+  const blob = data instanceof Blob ? data : new Blob([data], { type: 'text/plain;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement('a');
   anchor.href = url;
@@ -110,20 +117,26 @@ function App() {
   const [health,setHealth] = useState('checking');
   const [tab,setTab] = useState('workspace');
   const [lastRun,setLastRun] = useState(null);
+  const [progress,setProgress] = useState(null);
   const runGeneration = useRef(0);
   const inputFull = useRef(sample);
   const outputFull = useRef('');
+  const outputBlob = useRef(null);
+  const inputFile = useRef(null);
   const fileInputRef = useRef(null);
 
   const adoptInput = (text, label = '') => {
+    inputFile.current = null;
     inputFull.current = text;
     setInputLabel(label);
     setInput(text.length > MAX_INLINE_CHARS ? previewText(text) : text);
   };
-  const adoptOutput = (text) => {
-    outputFull.current = text;
-    setOutputLabel(text.length > MAX_INLINE_CHARS ? `${formatBytes(new Blob([text]).size)} held — preview only` : '');
-    setOutput(text.length > MAX_INLINE_CHARS ? previewText(text) : text);
+  const adoptOutput = (text, blob = null) => {
+    outputFull.current = text || '';
+    outputBlob.current = blob;
+    const bytes = blob ? blob.size : new Blob([text || '']).size;
+    setOutputLabel(bytes > MAX_INLINE_CHARS ? `${formatBytes(bytes)} — preview only · use Download` : '');
+    setOutput(text && text.length > MAX_INLINE_CHARS ? previewText(text) : (text || ''));
   };
 
   useEffect(()=>{
@@ -148,44 +161,81 @@ function App() {
     setBusy(true);
     setError('');
     setCopied(false);
+    setProgress(null);
     try {
+      const file = inputFile.current;
       const raw = inputFull.current || input;
-      const payload = parsing(raw, format);
+      const useChunkedText = format === 'text' && (
+        !!file
+        || new Blob([raw]).size > MAX_SINGLE_SHOT_BYTES
+      );
       let result;
-      if (operation === 'encode') {
-        result = await callApi('/v1/encode', apiKey, {
-          context_id: context || null,
+      if (useChunkedText) {
+        const chunks = file
+          ? iterateFileLineChunks(file)
+          : splitTextIntoLineChunks(raw);
+        result = await transformTextChunked({
+          chunks,
+          operation,
+          callApi,
+          apiKey,
           profile,
-          tenant_id: tenant.trim() || null,
-          purpose: 'llm-egress',
-          format,
-          payload
+          tenant: tenant.trim() || null,
+          contextId: context || null,
+          knownTotal: file ? Math.max(1, Math.ceil(file.size / (4 * 1024 * 1024))) : null,
+          onProgress: (p) => {
+            if (generation === runGeneration.current) setProgress(p);
+          },
         });
       } else {
-        if (!context.trim()) throw new Error('Enter the Context ID from a previous encoding operation.');
-        result = await callApi('/v1/decode', apiKey, {
-          context_id: context,
-          format,
-          payload,
-          purpose: 'llm-response',
-          reveal_credentials: false
-        });
+        const payload = parsing(raw, format);
+        if (operation === 'encode') {
+          result = await callApi('/v1/encode', apiKey, {
+            context_id: context || null,
+            profile,
+            tenant_id: tenant.trim() || null,
+            purpose: 'llm-egress',
+            format,
+            payload
+          });
+        } else {
+          if (!context.trim()) throw new Error('Enter the Context ID from a previous encoding operation.');
+          result = await callApi('/v1/decode', apiKey, {
+            context_id: context,
+            format,
+            payload,
+            purpose: 'llm-response',
+            reveal_credentials: false
+          });
+        }
+        const pretty = jsonPretty(result.payload, format);
+        result = {
+          context_id: result.context_id,
+          payloadPreview: pretty,
+          payloadBlob: new Blob([pretty], { type: 'text/plain;charset=utf-8' }),
+          stats: result.stats,
+          chunks: 1,
+        };
       }
       if (generation !== runGeneration.current) return;
-      const pretty = jsonPretty(result.payload, format);
       startTransition(() => {
-        if (operation === 'encode') setContext(result.context_id);
-        adoptOutput(pretty);
-        setStats(result.stats);
+        if (result.context_id) setContext(result.context_id);
+        adoptOutput(result.payloadPreview || '', result.payloadBlob || null);
+        setStats({
+          ...(result.stats || {}),
+          ...(result.chunks > 1 ? { chunks_processed: result.chunks } : {}),
+        });
         setLastRun(new Date().toLocaleTimeString());
         setError('');
+        setProgress(null);
       });
     } catch (err) {
       if (generation !== runGeneration.current) return;
       startTransition(() => {
         setError(err.message || 'Unexpected request failure.');
-        adoptOutput('');
+        adoptOutput('', null);
         setStats(null);
+        setProgress(null);
       });
     } finally {
       if (generation === runGeneration.current) setBusy(false);
@@ -194,13 +244,19 @@ function App() {
 
   const reset = () => {
     const next = format === 'text' ? '' : sample;
+    inputFile.current = null;
     adoptInput(next, '');
     adoptOutput('');
     setError('');
     setStats(null);
     setContext('');
+    setProgress(null);
   };
   const copy = async () => {
+    if (outputBlob.current && outputBlob.current.size > MAX_INLINE_CHARS) {
+      setError('Output is too large for clipboard. Use Download.');
+      return;
+    }
     const text = outputFull.current || output;
     if (!text) return;
     try {
@@ -213,9 +269,17 @@ function App() {
   };
   const switchDirection = () => {
     setOperation(x => x === 'encode' ? 'decode' : 'encode');
-    if (outputFull.current || output) {
+    if (outputBlob.current && outputBlob.current.size > MAX_SINGLE_SHOT_BYTES) {
+      // Keep file-sized output as a synthetic File for the next chunked pass.
+      const next = new File([outputBlob.current], 'protected-output.txt', { type: 'text/plain' });
+      inputFile.current = next;
+      inputFull.current = '';
+      setInputLabel(`protected-output.txt · ${formatBytes(next.size)} · chunked stream`);
+      setInput(previewText(outputFull.current || ''));
+      adoptOutput('', null);
+    } else if (outputFull.current || output) {
       adoptInput(outputFull.current || output, outputLabel ? 'From previous output' : '');
-      adoptOutput('');
+      adoptOutput('', null);
     }
     setStats(null);
     setError('');
@@ -238,12 +302,21 @@ function App() {
       return;
     }
     try {
-      const text = await file.text();
       setFormat('text');
-      adoptInput(text, `${file.name} · ${formatBytes(file.size)}`);
       adoptOutput('');
       setStats(null);
       setError('');
+      // Streamed path: keep File handle; only preview the head (supports ~1 GiB).
+      if (file.size > MAX_SINGLE_SHOT_BYTES) {
+        const head = await file.slice(0, Math.min(file.size, PREVIEW_CHARS * 4)).text();
+        inputFile.current = file;
+        inputFull.current = '';
+        setInputLabel(`${file.name} · ${formatBytes(file.size)} · chunked stream`);
+        setInput(previewText(head));
+      } else {
+        const text = await file.text();
+        adoptInput(text, `${file.name} · ${formatBytes(file.size)}`);
+      }
     } catch {
       setError('Unable to read the selected file in the browser.');
     }
@@ -298,16 +371,17 @@ function App() {
               value={input}
               onChange={e => {
                 const next = e.target.value;
+                inputFile.current = null;
                 inputFull.current = next;
                 setInputLabel('');
                 setInput(next);
               }}
               spellCheck="false"
               aria-label="Input payload"
-              placeholder="Paste JSON/text, or load a large CSV/TXT with Upload file"
+              placeholder="Paste JSON/text, or Upload CSV/TXT up to 1 GiB (chunked)"
             />
             <div className="editor-footer">
-              <div><span className="dot-blue"/> Large files: use Upload (full payload kept off-DOM)</div>
+              <div><span className="dot-blue"/> Up to 1 GiB via Upload · streamed in ~4 MiB line chunks</div>
               <div className="editor-footer-actions">
                 <input ref={fileInputRef} type="file" accept=".csv,.txt,.json,.log,text/plain,text/csv,application/json" hidden onChange={onPickFile}/>
                 <button type="button" onClick={() => fileInputRef.current?.click()}><Upload size={14}/> Upload file</button>
@@ -331,8 +405,8 @@ function App() {
             <div className="editor-footer">
               <div><span className="dot-green"/>{output ? 'Transformation completed' : 'Awaiting transformation'}</div>
               <div className="editor-footer-actions">
-                <button type="button" onClick={copy} disabled={!(outputFull.current || output)}>{copied?<Check size={14}/>:<Copy size={14}/>} {copied?'Copied':'Copy'}</button>
-                <button type="button" onClick={() => downloadText(operation==='encode'?'protected-output.txt':'rehydrated-output.txt', outputFull.current || output)} disabled={!(outputFull.current || output)}><Download size={14}/> Download</button>
+                <button type="button" onClick={copy} disabled={!(outputBlob.current || outputFull.current || output)}>{copied?<Check size={14}/>:<Copy size={14}/>} {copied?'Copied':'Copy'}</button>
+                <button type="button" onClick={() => downloadBlob(operation==='encode'?'protected-output.txt':'rehydrated-output.txt', outputBlob.current || outputFull.current || output)} disabled={!(outputBlob.current || outputFull.current || output)}><Download size={14}/> Download</button>
               </div>
             </div>
           </div>
@@ -343,10 +417,20 @@ function App() {
             <span className="execute-icon" aria-hidden="true">
               {busy ? <LoaderCircle size={18} className="spin"/> : <Play size={18} fill="currentColor"/>}
             </span>
-            <span className="execute-label">{busy ? 'Processing…' : (operation === 'encode' ? 'Protect payload' : 'Rehydrate payload')}</span>
+            <span className="execute-label">
+              {busy
+                ? (progress ? `Chunk ${progress.done + 1}/${progress.total}…` : 'Processing…')
+                : (operation === 'encode' ? 'Protect payload' : 'Rehydrate payload')}
+            </span>
             <span className="execute-arrow" aria-hidden="true"><ArrowUpRight size={17}/></span>
           </button>
         </div>
+        {progress ? (
+          <div className="chunk-progress" aria-live="polite">
+            Processing chunk {Math.min(progress.done + 1, progress.total)} of {progress.total}
+            <i style={{ width: `${Math.round((progress.done / Math.max(progress.total, 1)) * 100)}%` }} />
+          </div>
+        ) : null}
         <div className="studio-status" aria-live="polite">
           {error ? (
             <div role="alert" className="alert error" key="studio-error">

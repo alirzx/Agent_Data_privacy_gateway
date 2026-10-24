@@ -661,6 +661,25 @@ h1 span { color: var(--soorin-cyan); }
   gap: 14px;
   margin-top: 20px;
 }
+.chunk-progress {
+  margin-top: 12px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--soorin-gray-500);
+  position: relative;
+  padding-bottom: 10px;
+}
+.chunk-progress i {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--soorin-cyan);
+  display: block;
+  max-width: 100%;
+  transition: width .2s ease;
+}
 .spin { animation: spin .9s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 

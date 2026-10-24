@@ -58,6 +58,46 @@ class PrivacyClient:
         return self._request("POST", "/v1/decode", json={"payload": payload, "format": format, "context_id": context_id,
                    "purpose": "llm-response", "reveal_credentials": False})
 
+    def encode_text_file(self, path: str, *, context_id: str | None = None, profile: str | None = None,
+                         tenant_id: str | None = None, chunk_bytes: int = 4_000_000,
+                         output_path: str | None = None) -> dict:
+        """Encode a multi-GB plain-text/CSV file as line-complete chunks sharing one context."""
+        import os
+        from pathlib import Path
+
+        src = Path(path)
+        out = Path(output_path) if output_path else src.with_suffix(src.suffix + ".protected")
+        context = context_id
+        stats = None
+        chunks = 0
+        with src.open("r", encoding="utf-8", errors="replace", newline="") as reader, out.open(
+            "w", encoding="utf-8", newline=""
+        ) as writer:
+            buf: list[str] = []
+            size = 0
+            def flush() -> None:
+                nonlocal context, stats, chunks, buf, size
+                if not buf:
+                    return
+                piece = "".join(buf)
+                buf, size = [], 0
+                result = self.encode(
+                    piece, format="text", context_id=context, profile=profile, tenant_id=tenant_id
+                )
+                context = result["context_id"]
+                stats = result.get("stats")
+                writer.write(str(result.get("payload", "")))
+                chunks += 1
+
+            for line in reader:
+                encoded = line.encode("utf-8", errors="replace")
+                if size and size + len(encoded) > chunk_bytes:
+                    flush()
+                buf.append(line)
+                size += len(encoded)
+            flush()
+        return {"context_id": context, "output_path": str(out), "stats": stats, "chunks": chunks, "bytes": os.path.getsize(out)}
+
     def delete_context(self, context_id: str) -> None:
         resp = self._client.delete(f"/v1/contexts/{context_id}")
         if resp.status_code != 204:
