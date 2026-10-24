@@ -518,22 +518,14 @@ h1 span { color: var(--soorin-cyan); }
   color: #fff;
   background: var(--soorin-navy);
 }
-.shielded-output {
+.editor-card textarea,
+.editor-card textarea.shielded-output-field {
+  resize: vertical;
   display: block;
   box-sizing: border-box;
   width: 100%;
   height: 300px;
-  min-height: 190px;
-  position: relative;
-  background: #fbfdfe;
-  border-top: 0;
-}
-.editor-card textarea {
-  resize: vertical;
-  display: block;
-  width: 100%;
-  height: 300px;
-  min-height: 190px;
+  min-height: 300px;
   background: #fbfdfe;
   color: #16304a;
   line-height: 1.68;
@@ -549,6 +541,10 @@ h1 span { color: var(--soorin-cyan); }
 .editor-card textarea:focus {
   outline: none;
   box-shadow: inset 0 0 0 1px rgba(20, 200, 184, 0.45);
+}
+.editor-card textarea.shielded-output-field {
+  resize: none;
+  cursor: text;
 }
 .editor-footer {
   height: 46px;
@@ -893,7 +889,11 @@ h1 span { color: var(--soorin-cyan); }
   .control-title > span { display: none; }
   .editor-heading { flex-direction: column; align-items: flex-start; }
   .editor-grid { grid-template-columns: 1fr; }
-  .editor-card textarea { height: 230px; }
+  .editor-card textarea,
+  .editor-card textarea.shielded-output-field {
+    height: 230px;
+    min-height: 230px;
+  }
   .action-row { align-items: stretch; flex-direction: column; }
   .execute { justify-content: center; }
   .result-bar { align-items: flex-start; flex-direction: column; }
