@@ -1,8 +1,6 @@
 """Stateless callers with explicit context ownership. Do not log payloads or credentials."""
 from __future__ import annotations
-
 from typing import Any
-
 import httpx
 
 
