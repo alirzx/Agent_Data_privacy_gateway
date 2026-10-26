@@ -490,7 +490,7 @@ function App() {
               placeholder="Paste JSON/text, or Upload CSV/TXT up to 1 GiB"
             />
             <div className="editor-footer">
-              <div><span className="dot-blue"/> ≤48 MiB one request · larger files in ~8 MiB line chunks</div>
+              <div><span className="dot-blue"/> ≤2 MiB one request · larger files in ~2 MiB line chunks + retry</div>
               <div className="editor-footer-actions">
                 <input ref={fileInputRef} type="file" accept=".csv,.txt,.json,.log,text/plain,text/csv,application/json" hidden onChange={onPickFile}/>
                 <button type="button" onClick={() => fileInputRef.current?.click()}><Upload size={14}/> Upload file</button>

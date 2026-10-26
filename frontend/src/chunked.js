@@ -1,10 +1,11 @@
 /** Line-aware chunking so multi-GB CSV/text can be encoded without one huge request. */
 
-// Stay under the gateway JSON body cap with headroom for escaping/envelope.
-// Files at or below this size are encoded in a single request (no mid-stream cuts).
-export const MAX_SINGLE_SHOT_BYTES = 48 * 1024 * 1024;
-// Only used when the file exceeds the single-shot cap (multi-hundred-MB / GiB jobs).
-export const CHUNK_TARGET_BYTES = 8 * 1024 * 1024;
+// Prefer one request when safe. Dense Splunk CSV above ~2–3 MiB previously
+// tripped leakage validation / worker drops on LAN gateways — keep the
+// interactive console on resilient chunk sizes under that threshold.
+export const MAX_SINGLE_SHOT_BYTES = 2 * 1024 * 1024;
+// Line-complete chunks for larger uploads (15–1000 MiB jobs).
+export const CHUNK_TARGET_BYTES = 2 * 1024 * 1024;
 
 /**
  * Split plain text on newlines into ~targetBytes chunks (never mid-line).

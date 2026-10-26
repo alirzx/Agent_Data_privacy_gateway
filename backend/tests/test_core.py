@@ -198,6 +198,16 @@ def test_splunk_csv_double_quoted_failed_users_in_text():
     assert not any(entry.value == 'payload.ps1' for entry in detector.discover('dropped payload.ps1'))
 
 
+def test_dotted_sam_ignores_alias_suffix_after_projection():
+    """Regression: prefix.USER_<hex> must not re-trigger dotted-SAM detection."""
+    detector = Detector(PolicyRegistry(ROOT / 'profiles').get('generic-v1'))
+    alias = 'USER_' + ('A' * 32)
+    glued = f'risk_message="spray against MOD.{alias} and KEEP.{alias}"'
+    found = detector.discover(glued)
+    assert not any(item.kind == 'USER' for item in found)
+    assert not any(alias in item.value and item.value != alias for item in found)
+
+
 @pytest.mark.asyncio
 async def test_splunk_csv_text_encode_scrubs_dotted_users():
     engine = PrivacyEngine(

@@ -23,3 +23,6 @@ dist/
 # Local data and logs
 *.log
 data/
+# Customer / notable exports — never commit production payloads
+petro-alerts.csv
+*.notable.csv

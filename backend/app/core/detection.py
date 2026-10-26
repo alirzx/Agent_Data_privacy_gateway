@@ -150,8 +150,15 @@ def is_dotted_sam_account(value: str) -> bool:
     match = DOTTED_SAM_RE.fullmatch(trimmed)
     if not match:
         return False
-    suffix = trimmed.rsplit(".", 1)[-1].casefold()
-    return suffix not in DOTTED_SAM_REJECT_SUFFIXES
+    left, _sep, right = trimmed.rpartition(".")
+    if not left or not right:
+        return False
+    if right.casefold() in DOTTED_SAM_REJECT_SUFFIXES:
+        return False
+    # After projection, prose can contain "prefix.USER_<hex>". That is not a SAM.
+    if KIND_RE.fullmatch(trimmed) or KIND_RE.fullmatch(left) or KIND_RE.fullmatch(right):
+        return False
+    return True
 
 
 def is_low_signal_identity(kind: str, value: str) -> bool:
