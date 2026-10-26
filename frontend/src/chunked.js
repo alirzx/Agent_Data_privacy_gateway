@@ -1,9 +1,10 @@
 /** Line-aware chunking so multi-GB CSV/text can be encoded without one huge request. */
 
-// Dense Splunk CSV: ~1 MiB encode ≈ 25s on the LAN gateway. Keep chunks small so
-// the first streamed output appears in a few seconds instead of minutes.
-export const CHUNK_TARGET_BYTES = 128 * 1024;
-export const MAX_SINGLE_SHOT_BYTES = 256 * 1024;
+// Stay under the gateway JSON body cap with headroom for escaping/envelope.
+// Files at or below this size are encoded in a single request (no mid-stream cuts).
+export const MAX_SINGLE_SHOT_BYTES = 48 * 1024 * 1024;
+// Only used when the file exceeds the single-shot cap (multi-hundred-MB / GiB jobs).
+export const CHUNK_TARGET_BYTES = 8 * 1024 * 1024;
 
 /**
  * Split plain text on newlines into ~targetBytes chunks (never mid-line).
@@ -13,11 +14,13 @@ export const MAX_SINGLE_SHOT_BYTES = 256 * 1024;
  */
 export function splitTextIntoLineChunks(text, targetBytes = CHUNK_TARGET_BYTES) {
   if (!text) return [''];
-  if (new Blob([text]).size <= targetBytes) return [text];
+  const size = utf8Bytes(text);
+  if (size <= targetBytes) return [text];
   const chunks = [];
   let start = 0;
   const length = text.length;
   while (start < length) {
+    // Estimate char window from target bytes (ASCII-heavy SOC CSV ≈ 1 byte/char).
     let end = Math.min(length, start + targetBytes);
     if (end < length) {
       const nl = text.lastIndexOf('\n', end - 1);
@@ -27,6 +30,13 @@ export function splitTextIntoLineChunks(text, targetBytes = CHUNK_TARGET_BYTES) 
     start = end;
   }
   return chunks.length ? chunks : [''];
+}
+
+function utf8Bytes(text) {
+  if (typeof TextEncoder !== 'undefined') {
+    return new TextEncoder().encode(text).length;
+  }
+  return new Blob([text]).size;
 }
 
 /**
@@ -44,6 +54,8 @@ export async function* iterateFileLineChunks(file, targetBytes = CHUNK_TARGET_BY
   const reader = file.stream().pipeThrough(new TextDecoderStream()).getReader();
   let pending = '';
   let chunk = '';
+  let chunkBytes = 0;
+  const encoder = new TextEncoder();
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -52,11 +64,14 @@ export async function* iterateFileLineChunks(file, targetBytes = CHUNK_TARGET_BY
     while ((cut = pending.lastIndexOf('\n')) >= 0) {
       const line = pending.slice(0, cut + 1);
       pending = pending.slice(cut + 1);
-      if (new Blob([chunk + line]).size > targetBytes && chunk) {
+      const lineBytes = encoder.encode(line).length;
+      if (chunkBytes && chunkBytes + lineBytes > targetBytes) {
         yield chunk;
         chunk = line;
+        chunkBytes = lineBytes;
       } else {
         chunk += line;
+        chunkBytes += lineBytes;
       }
     }
   }
@@ -64,10 +79,13 @@ export async function* iterateFileLineChunks(file, targetBytes = CHUNK_TARGET_BY
   if (chunk) yield chunk;
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
  * Encode/decode large plain text via many /v1 calls sharing one context.
- * Accepts an array or async iterable of chunks so 1 GiB files need not be
- * fully buffered before the first request.
+ * Retries transient network/5xx failures so long jobs do not die mid-stream.
  * @param {object} args
  */
 export async function transformTextChunked({
@@ -81,6 +99,7 @@ export async function transformTextChunked({
   onProgress,
   onChunk,
   knownTotal = null,
+  retries = 4,
 }) {
   let context = contextId || null;
   const blobParts = [];
@@ -96,32 +115,46 @@ export async function transformTextChunked({
       phase: operation,
     });
     let outPiece = '';
-    if (operation === 'encode') {
-      const result = await callApi('/v1/encode', apiKey, {
-        context_id: context,
-        profile,
-        tenant_id: tenant,
-        purpose: 'llm-egress',
-        format: 'text',
-        payload: piece,
-      });
-      context = result.context_id;
-      outPiece = String(result.payload ?? '');
-      stats = result.stats;
-    } else {
-      if (!context) throw new Error('Enter the Context ID from a previous encoding operation.');
-      const result = await callApi('/v1/decode', apiKey, {
-        context_id: context,
-        format: 'text',
-        payload: piece,
-        purpose: 'llm-response',
-        reveal_credentials: false,
-      });
-      outPiece = String(result.payload ?? '');
-      stats = result.stats;
+    let lastError = null;
+    for (let attempt = 0; attempt < retries; attempt += 1) {
+      try {
+        if (operation === 'encode') {
+          const result = await callApi('/v1/encode', apiKey, {
+            context_id: context,
+            profile,
+            tenant_id: tenant,
+            purpose: 'llm-egress',
+            format: 'text',
+            payload: piece,
+          });
+          context = result.context_id;
+          outPiece = String(result.payload ?? '');
+          stats = result.stats;
+        } else {
+          if (!context) throw new Error('Enter the Context ID from a previous encoding operation.');
+          const result = await callApi('/v1/decode', apiKey, {
+            context_id: context,
+            format: 'text',
+            payload: piece,
+            purpose: 'llm-response',
+            reveal_credentials: false,
+          });
+          outPiece = String(result.payload ?? '');
+          stats = result.stats;
+        }
+        lastError = null;
+        break;
+      } catch (err) {
+        lastError = err;
+        const msg = String(err?.message || err || '');
+        const transient = /network|abort|timeout|HTTP 502|HTTP 503|HTTP 504|fetch/i.test(msg);
+        if (!transient || attempt === retries - 1) throw err;
+        await sleep(500 * (2 ** attempt));
+      }
     }
+    if (lastError) throw lastError;
     blobParts.push(outPiece);
-    bytesOut += new Blob([outPiece]).size;
+    bytesOut += utf8Bytes(outPiece);
     await onChunk?.({
       piece: outPiece,
       index,

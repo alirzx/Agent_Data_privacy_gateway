@@ -23,7 +23,7 @@ def _parse(resp: httpx.Response) -> dict:
 
 
 class PrivacyClient:
-    def __init__(self, base_url: str, api_key: str, *, timeout: float = 8.0,
+    def __init__(self, base_url: str, api_key: str, *, timeout: float = 600.0,
                  transport: httpx.BaseTransport | None = None):
         if not api_key:
             raise ValueError("api_key is required")
@@ -59,14 +59,30 @@ class PrivacyClient:
                    "purpose": "llm-response", "reveal_credentials": False})
 
     def encode_text_file(self, path: str, *, context_id: str | None = None, profile: str | None = None,
-                         tenant_id: str | None = None, chunk_bytes: int = 128_000,
+                         tenant_id: str | None = None, chunk_bytes: int = 8_388_608,
                          output_path: str | None = None) -> dict:
-        """Encode a multi-GB plain-text/CSV file as line-complete chunks sharing one context."""
+        """Encode a plain-text/CSV file. Small files go in one request; larger files chunk."""
         import os
         from pathlib import Path
 
         src = Path(path)
         out = Path(output_path) if output_path else src.with_suffix(src.suffix + ".protected")
+        file_size = src.stat().st_size
+        # One shot when the file fits a single gateway body (with JSON envelope headroom).
+        single_shot_cap = min(chunk_bytes * 6, 48 * 1024 * 1024)
+        if file_size <= single_shot_cap:
+            text = src.read_text(encoding="utf-8", errors="replace")
+            result = self.encode(
+                text, format="text", context_id=context_id, profile=profile, tenant_id=tenant_id
+            )
+            out.write_text(str(result.get("payload", "")), encoding="utf-8", newline="")
+            return {
+                "context_id": result["context_id"],
+                "output_path": str(out),
+                "stats": result.get("stats"),
+                "chunks": 1,
+                "bytes": os.path.getsize(out),
+            }
         context = context_id
         stats = None
         chunks = 0
@@ -105,7 +121,7 @@ class PrivacyClient:
 
 
 class AsyncPrivacyClient:
-    def __init__(self, base_url: str, api_key: str, *, timeout: float = 8.0,
+    def __init__(self, base_url: str, api_key: str, *, timeout: float = 600.0,
                  transport: httpx.AsyncBaseTransport | None = None):
         if not api_key:
             raise ValueError("api_key is required")

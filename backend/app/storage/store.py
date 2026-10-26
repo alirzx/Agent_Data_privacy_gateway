@@ -11,6 +11,7 @@ class Conflict(Exception):
 
 class BlobStore(Protocol):
     async def get(self, key: str) -> bytes | None: ...
+    async def mget(self, keys: list[str]) -> list[bytes | None]: ...
     async def create(self, key: str, value: bytes, ttl: int) -> bool: ...
     async def put(self, key: str, value: bytes, ttl: int) -> None: ...
     async def cas(self, key: str, original: bytes, value: bytes, ttl: int) -> bool: ...
@@ -34,6 +35,9 @@ class MemoryBlobStore:
                 self._items.pop(key, None)
                 return None
             return value[0]
+
+    async def mget(self, keys: list[str]) -> list[bytes | None]:
+        return [await self.get(key) for key in keys]
 
     async def create(self, key: str, value: bytes, ttl: int) -> bool:
         async with self._lock:
@@ -79,6 +83,12 @@ class RedisBlobStore:
 
     async def get(self, key: str) -> bytes | None:
         return await self._client.get(key)
+
+    async def mget(self, keys: list[str]) -> list[bytes | None]:
+        if not keys:
+            return []
+        values = await self._client.mget(keys)
+        return list(values)
 
     async def create(self, key: str, value: bytes, ttl: int) -> bool:
         return bool(await self._client.set(key, value, ex=ttl, nx=True))

@@ -11,6 +11,7 @@ import {
   splitTextIntoLineChunks,
   transformTextChunked,
   MAX_SINGLE_SHOT_BYTES,
+  CHUNK_TARGET_BYTES,
 } from './chunked.js';
 import { ShieldedOutput } from './shielded-output.jsx';
 
@@ -20,6 +21,9 @@ const MAX_INLINE_CHARS = 512 * 1024;
 const STREAM_DISPLAY_CHARS = 256 * 1024;
 /** Browser console accepts up to 1 GiB via streamed chunked encode (not one shot). */
 const MAX_FILE_BYTES = 1024 * 1024 * 1024;
+/** Per-request budget for large single-shot / chunk encodes (10 minutes). */
+const API_TIMEOUT_MS = 10 * 60 * 1000;
+const API_RETRIES = 4;
 
 const sample = JSON.stringify({
   "src_ip": "10.20.3.7",
@@ -55,27 +59,56 @@ function parsing(value, type) {
   try { return JSON.parse(value); }
   catch { throw new Error('Invalid JSON. Correct the syntax or switch to Plain text.'); }
 }
-async function callApi(path, apiKey, payload) {
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function callApi(path, apiKey, payload, {
+  timeoutMs = API_TIMEOUT_MS,
+  retries = API_RETRIES,
+} = {}) {
   if (!apiKey) throw new Error('Enter a local development API key to continue.');
-  let res;
-  try {
-    res = await fetch(path, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-      cache: 'no-store'
-    });
-  } catch {
-    throw new Error('Network failure talking to the privacy gateway.');
-  }
-  const value = await res.json().catch(() => ({ detail: 'Unable to read API response.' }));
-  if (!res.ok) {
-    if (res.status === 413) {
-      throw new Error(value.detail || 'Payload exceeds gateway limit (configure DLP_MAX_PAYLOAD_BYTES).');
+  let lastError = null;
+  for (let attempt = 0; attempt < retries; attempt += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(path, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        cache: 'no-store',
+        signal: controller.signal,
+      });
+      const value = await res.json().catch(() => ({ detail: 'Unable to read API response.' }));
+      if (res.ok) return value;
+      if (res.status === 413) {
+        throw new Error(value.detail || 'Payload exceeds gateway limit (configure DLP_MAX_PAYLOAD_BYTES).');
+      }
+      const retryable = res.status === 502 || res.status === 503 || res.status === 504;
+      if (retryable && attempt < retries - 1) {
+        lastError = new Error(value.detail || `Gateway returned HTTP ${res.status}`);
+        await sleep(500 * (2 ** attempt));
+        continue;
+      }
+      throw new Error(value.detail || `Gateway returned HTTP ${res.status}`);
+    } catch (err) {
+      lastError = err;
+      const msg = String(err?.message || err || '');
+      const aborted = err?.name === 'AbortError' || /aborted|timeout/i.test(msg);
+      const network = aborted || /network|failed to fetch|load failed/i.test(msg);
+      if (network && attempt < retries - 1) {
+        await sleep(500 * (2 ** attempt));
+        continue;
+      }
+      if (aborted) throw new Error('Gateway request timed out — retrying was exhausted.');
+      if (network) throw new Error('Network failure talking to the privacy gateway.');
+      throw err instanceof Error ? err : new Error(String(err));
+    } finally {
+      clearTimeout(timer);
     }
-    throw new Error(value.detail || `Gateway returned HTTP ${res.status}`);
   }
-  return value;
+  throw lastError || new Error('Network failure talking to the privacy gateway.');
 }
 function downloadBlob(filename, data) {
   const blob = data instanceof Blob ? data : new Blob([data], { type: 'text/plain;charset=utf-8' });
@@ -218,16 +251,16 @@ function App() {
     try {
       const file = inputFile.current;
       const raw = inputFull.current || input;
-      const useChunkedText = format === 'text' && (
-        !!file
-        || new Blob([raw]).size > MAX_SINGLE_SHOT_BYTES
-      );
+      // Prefer one request whenever the body fits the gateway cap — avoids
+      // hundreds of fragile round-trips that used to stall/cut 20 MiB jobs.
+      const inlineBytes = file ? file.size : new Blob([raw]).size;
+      const useChunkedText = format === 'text' && inlineBytes > MAX_SINGLE_SHOT_BYTES;
       let result;
       if (useChunkedText) {
         beginStreamOutput();
         const chunks = file
-          ? iterateFileLineChunks(file)
-          : splitTextIntoLineChunks(raw);
+          ? iterateFileLineChunks(file, CHUNK_TARGET_BYTES)
+          : splitTextIntoLineChunks(raw, CHUNK_TARGET_BYTES);
         result = await transformTextChunked({
           chunks,
           operation,
@@ -236,7 +269,7 @@ function App() {
           profile,
           tenant: tenant.trim() || null,
           contextId: context || null,
-          knownTotal: file ? Math.max(1, Math.ceil(file.size / (128 * 1024))) : null,
+          knownTotal: file ? Math.max(1, Math.ceil(file.size / CHUNK_TARGET_BYTES)) : null,
           onProgress: (p) => {
             if (generation === runGeneration.current) setProgress(p);
           },
@@ -246,7 +279,8 @@ function App() {
           },
         });
       } else {
-        const payload = parsing(raw, format);
+        const sourceText = file && format === 'text' ? await file.text() : raw;
+        const payload = parsing(sourceText, format);
         if (operation === 'encode') {
           result = await callApi('/v1/encode', apiKey, {
             context_id: context || null,
@@ -453,10 +487,10 @@ function App() {
               }}
               spellCheck="false"
               aria-label="Input payload"
-              placeholder="Paste JSON/text, or Upload CSV/TXT up to 1 GiB (chunked)"
+              placeholder="Paste JSON/text, or Upload CSV/TXT up to 1 GiB"
             />
             <div className="editor-footer">
-              <div><span className="dot-blue"/> Up to 1 GiB via Upload · streamed in ~128 KiB line chunks</div>
+              <div><span className="dot-blue"/> ≤48 MiB one request · larger files in ~8 MiB line chunks</div>
               <div className="editor-footer-actions">
                 <input ref={fileInputRef} type="file" accept=".csv,.txt,.json,.log,text/plain,text/csv,application/json" hidden onChange={onPickFile}/>
                 <button type="button" onClick={() => fileInputRef.current?.click()}><Upload size={14}/> Upload file</button>

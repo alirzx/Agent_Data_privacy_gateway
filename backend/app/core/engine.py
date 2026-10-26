@@ -121,49 +121,90 @@ class PrivacyEngine:
         if fmt not in {"text", "json", "messages"}:
             raise PrivacyError("Unsupported format")
 
-    async def _resolve_alias(self, *, namespace: str, kind: str, canonical_value: str, prefix: str) -> str:
-        """First write wins in the durable registry; later encodes only read the stored alias."""
-        ns_digest = hmac.new(
+    def _registry_digest(self, namespace: str, kind: str, canonical_value: str) -> str:
+        return hmac.new(
             self.crypto.derive("lookup:" + namespace),
             f"{kind}\x00{canonical_value}".encode(),
             hashlib.sha256,
         ).hexdigest()
-        reg_key = self._registry_key(namespace, ns_digest)
-        stored = await self.store.get(reg_key)
-        if stored is not None:
-            try:
-                alias = stored.decode("ascii")
-            except UnicodeDecodeError as exc:
-                raise PrivacyError("Corrupt alias registry entry") from exc
-            if not KIND_RE.fullmatch(alias):
-                await self.store.delete(reg_key)
-            else:
-                await self.store.put(reg_key, stored, self.max_ttl)
-                return alias
+
+    @staticmethod
+    def _decode_registry_alias(raw: bytes | None) -> str | None:
+        if raw is None:
+            return None
+        try:
+            alias = raw.decode("ascii")
+        except UnicodeDecodeError as exc:
+            raise PrivacyError("Corrupt alias registry entry") from exc
+        if not KIND_RE.fullmatch(alias):
+            return None
+        return alias
+
+    async def _mint_registry_alias(self, reg_key: str, prefix: str) -> str:
         candidate = f"{prefix}_{os.urandom(16).hex().upper()}"
         if not KIND_RE.fullmatch(candidate):
             raise PrivacyError("Generated alias failed validation")
         payload = candidate.encode("ascii")
         if await self.store.create(reg_key, payload, self.max_ttl):
             return candidate
-        winner = await self.store.get(reg_key)
+        winner = self._decode_registry_alias(await self.store.get(reg_key))
         if winner is None:
             raise PrivacyError("Alias registry race lost without winner")
-        try:
-            alias = winner.decode("ascii")
-        except UnicodeDecodeError as exc:
-            raise PrivacyError("Corrupt alias registry entry") from exc
-        if not KIND_RE.fullmatch(alias):
-            raise PrivacyError("Alias registry returned an invalid alias")
-        await self.store.put(reg_key, winner, self.max_ttl)
-        return alias
+        return winner
+
+    async def _resolve_alias(self, *, namespace: str, kind: str, canonical_value: str, prefix: str) -> str:
+        """First write wins in the durable registry; later encodes only read the stored alias."""
+        reg_key = self._registry_key(namespace, self._registry_digest(namespace, kind, canonical_value))
+        stored = self._decode_registry_alias(await self.store.get(reg_key))
+        if stored is not None:
+            return stored
+        return await self._mint_registry_alias(reg_key, prefix)
+
+    async def _resolve_aliases_batch(
+        self,
+        *,
+        namespace: str,
+        specs: list[tuple[str, str, str]],
+    ) -> list[str]:
+        """Resolve many registry aliases with one mget, then create only the misses."""
+        if not specs:
+            return []
+        keys = [
+            self._registry_key(namespace, self._registry_digest(namespace, kind, canonical_value))
+            for kind, canonical_value, _prefix in specs
+        ]
+        values = await self.store.mget(keys)
+        aliases: list[str | None] = []
+        for idx, raw in enumerate(values):
+            alias = self._decode_registry_alias(raw)
+            if alias is None and raw is not None:
+                await self.store.delete(keys[idx])
+            aliases.append(alias)
+        resolved: list[str] = []
+        for idx, alias in enumerate(aliases):
+            if alias is None:
+                _kind, _canonical, prefix = specs[idx]
+                alias = await self._mint_registry_alias(keys[idx], prefix)
+            resolved.append(alias)
+        return resolved
+
+    def _normalize_token_kind(self, kind: str, original: str) -> str:
+        if kind == "IP":
+            return "IP_OPAQUE" if ip_kind(original) == "IP_OPAQUE" else "IP"
+        if kind == "USER" and re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", original):
+            return "EMAIL"
+        return kind
+
+    @staticmethod
+    def _storage_original(kind: str, original: str) -> str:
+        """Persist a stable reversible spelling (collapse Splunk DOMAIN\\\\user escapes)."""
+        if kind == "USER" and "\\" in original and not original.startswith("\\\\") and not re.match(r"^[A-Za-z]:\\", original):
+            domain, _sep, account = original.partition("\\")
+            return f"{domain}\\{account.lstrip('\\')}"
+        return original
 
     async def _token(self, context: dict, dek: bytes, kind: str, original: str) -> str:
-        if kind == "IP":
-            # A typed, malformed IP must remain opaque instead of leaking.
-            kind = "IP_OPAQUE" if ip_kind(original) == "IP_OPAQUE" else "IP"
-        if kind == "USER" and re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", original):
-            kind = "EMAIL"
+        kind = self._normalize_token_kind(kind, original)
         try:
             canonical_value = canonical(kind, original)
         except ValueError:
@@ -182,64 +223,134 @@ class PrivacyEngine:
             canonical_value=canonical_value,
             prefix=prefix,
         )
-        # Exact spelling of first registered occurrence is retained for authorized restore.
+        # Prefer collapsed Windows principal spelling so JSON-escaped forms restore cleanly.
         context["items"][alias] = {
             "kind": kind,
-            "encrypted_original": Crypto.encrypt_original(dek, context["context_id"], alias, original),
+            "encrypted_original": Crypto.encrypt_original(
+                dek, context["context_id"], alias, self._storage_original(kind, original),
+            ),
         }
         context["index"][digest] = alias
         return alias
+
+    async def _bind_tokens(
+        self,
+        context: dict,
+        dek: bytes,
+        discovered: list,
+    ) -> list[tuple[str, str, str]]:
+        """Map discovered values to aliases with batched registry lookups."""
+        prepared: list[tuple[str, str, str, str, str]] = []
+        for item in discovered:
+            kind = self._normalize_token_kind(item.kind, item.value)
+            try:
+                canonical_value = canonical(kind, item.value)
+            except ValueError:
+                canonical_value = item.value.strip()
+            digest = hmac.new(
+                self.crypto.derive("lookup:" + context["context_id"]),
+                f"{kind}\x00{canonical_value}".encode(),
+                hashlib.sha256,
+            ).hexdigest()
+            prepared.append((item.value, kind, canonical_value, digest, ip_kind(item.value) if kind == "IP" else kind))
+
+        pairs: list[tuple[str, str, str]] = []
+        pending_idx: list[int] = []
+        pending_specs: list[tuple[str, str, str]] = []
+        for idx, (original, kind, canonical_value, digest, prefix) in enumerate(prepared):
+            existing = context["index"].get(digest)
+            if existing:
+                pairs.append((original, existing, kind))
+                continue
+            pending_idx.append(idx)
+            pending_specs.append((kind, canonical_value, prefix))
+
+        if pending_specs:
+            if len(context["items"]) + len(pending_specs) > self.max_entries:
+                raise PrivacyError("Context mapping entry limit reached")
+            aliases = await self._resolve_aliases_batch(
+                namespace=context["namespace"],
+                specs=pending_specs,
+            )
+            for slot, alias in zip(pending_idx, aliases, strict=True):
+                original, kind, _canonical, digest, _prefix = prepared[slot]
+                context["items"][alias] = {
+                    "kind": kind,
+                    "encrypted_original": Crypto.encrypt_original(
+                        dek,
+                        context["context_id"],
+                        alias,
+                        self._storage_original(kind, original),
+                    ),
+                }
+                context["index"][digest] = alias
+                pairs.append((original, alias, kind))
+
+        expanded: list[tuple[str, str, str]] = []
+        for original, alias, kind in pairs:
+            expanded.append((original, alias, kind))
+            # Also replace its JSON-escaped spelling in serialized LLM messages.
+            escaped = json.dumps(original, ensure_ascii=False)[1:-1]
+            if escaped != original:
+                expanded.append((escaped, alias, kind))
+        expanded.sort(key=lambda entry: (-len(entry[0]), -int(_is_secret(entry[2])), entry[1]))
+        return expanded
 
     async def _project(self, payload: Any, detector: Detector, context: dict, dek: bytes,
                        registrations: list[Registration]) -> tuple[Any, dict[str, int]]:
         # Detection is CPU-heavy on multi-MB CSV; keep the event loop free for /health.
         discovered = await asyncio.to_thread(detector.discover, payload, registrations)
-        pairs: list[tuple[str, str, str]] = []
-        for item in discovered:
-            alias = await self._token(context, dek, item.kind, item.value)
-            pairs.append((item.value, alias, item.kind))
-            # Also replace its JSON-escaped spelling in serialized LLM messages.
-            # A Windows identity CORP\alice is rendered as CORP\\alice in JSON.
-            escaped = json.dumps(item.value, ensure_ascii=False)[1:-1]
-            if escaped != item.value:
-                pairs.append((escaped, alias, item.kind))
-        pairs.sort(key=lambda entry: (-len(entry[0]), -int(_is_secret(entry[2])), entry[1]))
+        pairs = await self._bind_tokens(context, dek, discovered)
 
-        def _boundary_flags(kind: str) -> int:
-            # PATH is case-insensitive on Windows; Splunk file_name / Image casing often differs.
-            return re.IGNORECASE if kind in {
+        def _case_insensitive(kind: str) -> bool:
+            return kind in {
                 "HOST", "EMAIL", "USER", "ASSET", "IP_OPAQUE", "SPLUNK_INDEX", "PATH", "DOMAIN",
-            } else 0
+            }
 
-        def _boundary_pattern(kind: str, original: str) -> str:
-            # Bare USER tokens must not splice the account half of DOMAIN\user;
-            # that would leave DOMAIN\<alias> which re-matches as a Windows principal.
+        def _boundary_ok(kind: str, original: str, text: str, start: int, end: int) -> bool:
+            before = text[start - 1] if start > 0 else ""
+            after = text[end] if end < len(text) else ""
             if kind == "USER" and "\\" not in original:
-                return rf"(?<![A-Za-z0-9_\\]){re.escape(original)}(?![A-Za-z0-9_])"
-            # Paths already carry strong shape; avoid lookbehind that fails when an
-            # escaped AD principal (TEAM\\server\share) prefixes a UNC suffix.
+                if before and (before.isalnum() or before in "_\\"):
+                    return False
+                if after and (after.isalnum() or after == "_"):
+                    return False
+                return True
             if kind == "PATH":
-                return rf"(?<![A-Za-z0-9]){re.escape(original)}(?![A-Za-z0-9])"
-            return rf"(?<![A-Za-z0-9_]){re.escape(original)}(?![A-Za-z0-9_])"
+                if before and before.isalnum():
+                    return False
+                if after and after.isalnum():
+                    return False
+                return True
+            if before and (before.isalnum() or before == "_"):
+                return False
+            if after and (after.isalnum() or after == "_"):
+                return False
+            return True
 
         def _should_skip_global_replace(kind: str, original: str) -> bool:
             if len(original) < 2:
                 return True
-            # A single ordinary word as a HOST should never become a free-text
-            # global replacement unless it has strong syntactic specificity.
             if kind == "HOST" and original.casefold() in {"siem", "change", "windows", "registry", "source", "unknown"}:
                 return True
-            # Very short USER/HOST tokens are replaced in typed fields / MV blobs
-            # only. Global narrative replace creates false Windows principals
-            # (DOMAIN\<alias>) and collisions with English substrings.
             if kind in {"USER", "HOST", "ASSET"} and len(original) < 3 and "\\" not in original:
                 return True
             return False
 
-        def text_replace(text: str, *, allow_short: bool = False) -> str:
-            # Replace long matches first, preserve exact aliases and word boundaries.
-            # Avoid cascading replacements by operating on the ORIGINAL string once.
-            matches: list[tuple[int, int, str]] = []
+        def _boundary_prefix_suffix(kind: str, original: str) -> tuple[str, str]:
+            if kind == "USER" and "\\" not in original:
+                return r"(?<![A-Za-z0-9_\\])", r"(?![A-Za-z0-9_])"
+            if kind == "PATH":
+                return r"(?<![A-Za-z0-9])", r"(?![A-Za-z0-9])"
+            return r"(?<![A-Za-z0-9_])", r"(?![A-Za-z0-9_])"
+
+        # Precompile batched alternation regexes (longest-first) so multi-MB CSV
+        # is scanned a handful of times instead of once per identity.
+        # Keep batches modest so the regex engine stays linear on dense CSV.
+        _REPLACE_BATCH = 120
+
+        def _build_replace_plans(allow_short: bool) -> list[tuple[re.Pattern[str], dict[str, str]]]:
+            groups: dict[tuple[str, str, bool], list[tuple[str, str]]] = {}
             for original, alias, kind in pairs:
                 if _should_skip_global_replace(kind, original) and not allow_short:
                     continue
@@ -247,19 +358,63 @@ class PrivacyEngine:
                     continue
                 if kind == "HOST" and original.casefold() in {"siem", "change", "windows", "registry", "source", "unknown"}:
                     continue
-                flags = _boundary_flags(kind)
-                for m in re.finditer(_boundary_pattern(kind, original), text, flags):
-                    matches.append((m.start(), m.end(), alias))
-            # Distinct semantic candidates may overlap (URL/host, CIDR/IP,
-            # Windows principal/path). Prefer longest interval, never splice tokens.
-            matches.sort(key=lambda m: (-(m[1] - m[0]), m[0]))
+                prefix, suffix = _boundary_prefix_suffix(kind, original)
+                key = (prefix, suffix, _case_insensitive(kind))
+                groups.setdefault(key, []).append((original, alias))
+            plans: list[tuple[re.Pattern[str], dict[str, str]]] = []
+            for (prefix, suffix, ignore_case), items in groups.items():
+                items.sort(key=lambda entry: len(entry[0]), reverse=True)
+                mapping: dict[str, str] = {}
+                for original, alias in items:
+                    mapping[original.casefold() if ignore_case else original] = alias
+                flags = re.IGNORECASE if ignore_case else 0
+                for offset in range(0, len(items), _REPLACE_BATCH):
+                    batch = items[offset: offset + _REPLACE_BATCH]
+                    alternation = "|".join(re.escape(original) for original, _alias in batch)
+                    pattern = re.compile(rf"{prefix}(?:{alternation}){suffix}", flags)
+                    plans.append((pattern, mapping))
+            return plans
+
+        _plans_normal = _build_replace_plans(False)
+        _plans_short = _build_replace_plans(True)
+
+        def text_replace(text: str, *, allow_short: bool = False) -> str:
+            plans = _plans_short if allow_short else _plans_normal
+            if not plans:
+                return text
+            # Collect non-overlapping matches across all batches, longest first.
+            matches: list[tuple[int, int, str]] = []
+            for pattern, mapping in plans:
+                ignore_case = bool(pattern.flags & re.IGNORECASE)
+                for match in pattern.finditer(text):
+                    raw = match.group()
+                    alias = mapping.get(raw.casefold() if ignore_case else raw)
+                    if alias is None:
+                        continue
+                    matches.append((match.start(), match.end(), alias))
+            if not matches:
+                return text
+            matches.sort(key=lambda item: (-(item[1] - item[0]), item[0]))
+            covered = bytearray(len(text))
             selected: list[tuple[int, int, str]] = []
-            for m in matches:
-                if not any(m[0] < n[1] and n[0] < m[1] for n in selected):
-                    selected.append(m)
-            for start, end, alias in sorted(selected, reverse=True):
-                text = text[:start] + alias + text[end:]
-            return text
+            for start, end, alias in matches:
+                view = covered[start:end]
+                if view and any(view):
+                    continue
+                covered[start:end] = b"\x01" * (end - start)
+                selected.append((start, end, alias))
+            # Build once — reverse slice concatenation is O(n*matches) on multi-MB CSV.
+            selected.sort(key=lambda item: item[0])
+            parts: list[str] = []
+            cursor = 0
+            for start, end, alias in selected:
+                if start < cursor:
+                    continue
+                parts.append(text[cursor:start])
+                parts.append(alias)
+                cursor = end
+            parts.append(text[cursor:])
+            return "".join(parts)
 
         def walk(value: Any, path: tuple[str, ...] = (), siblings: dict | None = None, depth: int = 0):
             if depth > 32:
@@ -271,11 +426,9 @@ class PrivacyEngine:
             if isinstance(value, str):
                 sem = detector._semantics(path, siblings)
                 if sem and sem != "IDENTITY":
-                    # A typed value must match its own kind (or normalized IP/EMAIL).
                     for original, alias, kind in pairs:
                         if value == original and (kind == sem or (sem == "IP" and kind == "IP_OPAQUE") or (sem == "USER" and kind == "EMAIL")):
                             return alias
-                    # Splunk MV identity fields need in-field short-token scrubbing.
                     if sem in {"USER", "HOST", "ASSET", "EMAIL", "IP", "SPLUNK_INDEX", "PATH", "DOMAIN"}:
                         if "\n" in value or "\r" in value or len(value) < 3:
                             return text_replace(value, allow_short=True)
@@ -284,22 +437,10 @@ class PrivacyEngine:
 
         def finalize() -> tuple[Any, dict[str, int]]:
             result = walk(payload)
-            # Boundary invariant: classified identities must not remain as whole tokens.
-            # Substring hits inside longer words (admin in administrator) are not leaks.
             rendered = list(_walk_strings(result))
-            for original, _alias, kind in pairs:
-                if _should_skip_global_replace(kind, original) and "\\" not in original and len(original) < 3:
-                    # Short tokens are only required to disappear from typed/MV fields;
-                    # narrative English collisions are acceptable non-leaks.
-                    continue
-                flags = _boundary_flags(kind)
-                pattern = re.compile(_boundary_pattern(kind, original), flags)
-                if any(pattern.search(content) for content in rendered):
-                    raise PrivacyError("Leakage validation failed: classified identity remained in output")
-            # Defense-in-depth: detect any residual high-confidence private value.
+            # Defense-in-depth: residual high-confidence identities after projection.
             remaining = detector.discover(result)
             if remaining:
-                # Already-tokenized aliases are excluded by Detector._accepted.
                 raise PrivacyError("Leakage validation failed: unmatched sensitive pattern")
             return result, {
                 "tokenized_unique": len(set(alias for _o, alias, _k in pairs)),

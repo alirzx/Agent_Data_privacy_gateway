@@ -395,3 +395,49 @@ async def test_tenantless_aliases_remain_context_isolated():
     b=await engine.encode(principal,context_id=second['context_id'],fmt='json',payload=payload,registrations=[])
     assert a['payload']['hostname']!=b['payload']['hostname']
     assert a['payload']['password']!=b['payload']['password']
+
+
+@pytest.mark.asyncio
+async def test_large_splunk_like_text_encode_throughput():
+    """Regression: multi-MB notable CSV must finish in one encode without multi-minute stalls."""
+    import time
+
+    engine = PrivacyEngine(
+        crypto=Crypto(os.urandom(32)),
+        store=MemoryBlobStore(),
+        policies=PolicyRegistry(ROOT / 'profiles'),
+        max_entries=50_000,
+    )
+    principal = Principal('a', frozenset(), True, False)
+    context = await engine.create_context(principal, tenant_id=None, profile='generic-v1')
+    users = [f'U{i:04d}.SYNTHUSER' for i in range(400)]
+    machines = [f'LAB-HOST-{i:03d}$' for i in range(50)]
+    lines = []
+    # ~1.2–2 MiB of dense Splunk-like free text (synthetic only).
+    while sum(len(line) for line in lines) < 1_200_000:
+        for user in users:
+            machine = machines[len(lines) % len(machines)]
+            lines.append(
+                f'failed_user=""{user}"", dest=""ws-lab-01"", '
+                f'src=""::FFFF:10.20.30.{len(lines) % 200}"", '
+                f'service=""{machine}"", risk_message="spray against {user}"\n'
+            )
+    payload = ''.join(lines)
+    assert len(payload.encode('utf-8')) >= 1_000_000
+    started = time.perf_counter()
+    protected = await engine.encode(
+        principal,
+        context_id=context['context_id'],
+        fmt='text',
+        payload=payload,
+        registrations=[],
+    )
+    elapsed = time.perf_counter() - started
+    blob = protected['payload']
+    for sample_user in users[:20]:
+        assert sample_user not in blob
+    for sample_machine in machines[:10]:
+        assert sample_machine not in blob
+    assert 'USER_' in blob
+    # Old 128 KiB × per-identity replace was multi-minute; one-shot must stay interactive.
+    assert elapsed < 12.0, f'large text encode too slow: {elapsed:.2f}s'

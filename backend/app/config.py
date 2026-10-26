@@ -71,8 +71,8 @@ class Settings:
             profile_dir=profiles,
             dev_mode=dev,
             ui_enabled=ui_enabled,
-            # Per-request body cap (chunk size). Multi-GB jobs must stream many requests.
-            max_payload_bytes=int(os.getenv("DLP_MAX_PAYLOAD_BYTES", "33554432")),
+            # Per-request body cap. Multi-GB jobs stream many requests under this limit.
+            max_payload_bytes=int(os.getenv("DLP_MAX_PAYLOAD_BYTES", "67108864")),
             max_entries=int(os.getenv("DLP_MAX_ENTRIES", "1000000")),
             default_ttl_seconds=int(os.getenv("DLP_CONTEXT_TTL", "3600")),
             max_ttl_seconds=int(os.getenv("DLP_MAX_CONTEXT_TTL", "86400")),

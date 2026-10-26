@@ -24,4 +24,5 @@ USER 10001:10001
 EXPOSE 8484
 HEALTHCHECK --interval=30s --timeout=4s --retries=3 CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8484/health',timeout=2)"
 # Two workers so /health stays up while one worker runs a heavy encode.
-CMD ["uvicorn", "app.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8484", "--workers", "2", "--proxy-headers", "--no-access-log"]
+# Long timeout: single-shot ≤48 MiB SOC CSV can take minutes of CPU-bound detection.
+CMD ["uvicorn", "app.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8484", "--workers", "2", "--timeout-keep-alive", "75", "--proxy-headers", "--no-access-log"]
