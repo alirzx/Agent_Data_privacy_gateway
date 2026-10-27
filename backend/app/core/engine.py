@@ -200,7 +200,11 @@ class PrivacyEngine:
         """Persist a stable reversible spelling (collapse Splunk DOMAIN\\\\user escapes)."""
         if kind == "USER" and "\\" in original and not original.startswith("\\\\") and not re.match(r"^[A-Za-z]:\\", original):
             domain, _sep, account = original.partition("\\")
-            return f"{domain}\\{account.lstrip('\\')}"
+            # Keep the backslash operation outside the f-string expression so
+            # this remains valid on the declared Python 3.11 minimum (PEP 701
+            # only relaxed this grammar in Python 3.12).
+            account = account.lstrip("\\")
+            return f"{domain}\\{account}"
         return original
 
     async def _token(self, context: dict, dek: bytes, kind: str, original: str) -> str:
