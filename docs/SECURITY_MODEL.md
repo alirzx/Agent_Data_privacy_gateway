@@ -13,8 +13,8 @@
 | Service authentication | HMAC constant-time comparison against configured SHA-256 API key digests |
 | Tenant authorization | Explicit configured tenant allow-list per authenticated client |
 | Context access | Bound to owner client ID, tenant membership and server-side TTL |
-| Alias generation | HMAC-SHA256, purpose-separated key derivation, context- or tenant-scoped |
-| Credential unlinkability | Random aliases across contexts |
+| Alias generation | HMAC-SHA256 for context-/tenant-scoped registry lookup; random 128-bit typed aliases cached in the expiring registry |
+| Credential unlinkability | **Not guaranteed** across contexts sharing a tenant: current registry may reuse an alias until expiry. Credential originals are withheld on normal decode. |
 | Encrypted original mappings | AES-256-GCM per-entry DEK with alias/context AAD |
 | Encrypted storage | AES-256-GCM of whole Redis blob, including indices |
 | DEK protection | Wrapped under separate master-derived KEK |

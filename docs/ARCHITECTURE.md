@@ -20,7 +20,7 @@ One privacy service, not a custom redactor embedded independently in each Soorin
                              |
                Context-aware alias codec
                  /               \
-         HMAC identity        random credential
+        HMAC registry lookup  random typed aliases
                  \               /
                   Encrypted Mapping
                    |           |
@@ -49,8 +49,8 @@ Embedding Arvan, OpenAI, LiteLLM or LangChain in the DLP service would add uncon
 
 ## Identity algorithms
 
-- For non-credential kinds: canonicalize (IP normalization, casefold for identities, etc), derive an isolated HMAC namespace from master key + tenant (or unique context when tenantless), compute `HMAC-SHA256(version || kind || canonical value)` and render a typed alias (32 hex characters). A value appearing repeatedly in messages can be recognized across nested fields and text; no raw ID is present in the alias itself.
-- For credentials: random 128-bit alias suffix, with reuse *within the same active context* using a keyed lookup index; aliases vary across contexts.
+- For all supported kinds: canonicalize the identity, calculate an HMAC-protected registry lookup digest scoped to the tenant (or context when tenantless), then reuse an existing random 128-bit typed alias or mint a new random alias when absent. The HMAC is **not** directly rendered as the alias; registry entries expire. The same canonical identity can share an alias across active contexts of one tenant.
+- Credentials are also currently resolved through the tenant/context alias registry. As implemented, they **may be linkable across contexts of one tenant** until registry expiry; normal decode still returns `[PROTECTED_CREDENTIAL]`. Do not claim cross-context credential unlinkability.
 - HMAC tokens are **not decryptable**. `decode` is an authorized reverse mapping lookup, not reverse cryptography.
 - Public IOC preservation is contextual: free-text global public IPs are not pseudonymized automatically; explicitly typed `src_ip` or registered asset IPs are pseudonymized in the default profiles.
 
@@ -65,7 +65,7 @@ The current `v1` design uses one master KEK and requires preserving that key to 
 1. Authenticated principal creates or implicitly creates a context.
 2. Service verifies tenant membership against its *configured* principal allow-list.
 3. Context has an absolute TTL; decode must present the same context identifier and authentication principal.
-4. On encode, the current encrypted blob is read/decrypted, new registrations added and the whole encrypted snapshot atomically replaced via optimistic CAS (Redis `WATCH/MULTI`). Retry at most six times, then fail closed.
+4. On encode, the current encrypted blob is read/decrypted, new registrations added and the whole encrypted snapshot atomically replaced via optimistic CAS (Redis `WATCH/MULTI`). Retry at most 24 times, then fail closed.
 5. Encrypted mapping keys expire through store TTL; explicit DELETE removes the context immediately.
 6. Decode reads only aliases registered inside that specific context; unknown/modified aliases are not guessed.
 

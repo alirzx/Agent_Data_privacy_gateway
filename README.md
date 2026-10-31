@@ -15,18 +15,18 @@ Agent / Copilot  →  /v1/encode  →  External LLM  →  /v1/decode  →  Local
 - Schema-first detection for JSON, conversational text and LLM messages.
 - SOC/NOC entities: IPv4/IPv6, opaque IPs, MAC, CIDR/subnet, hostname, FQDN, domain, URL, user/Windows principal, email, asset, filesystem paths and organization references.
 - Credential patterns: password, access/API keys, bearer/JWT, cookies, private keys and generic secrets. Credential aliases **never reveal original secrets on normal decode**.
-- Tenant-aware deterministic HMAC aliases; context-specific aliases when tenantless; random context-scoped credential aliases.
+- Tenant-/context-scoped HMAC lookup keys into an expiring registry of random typed aliases. The current implementation may reuse credential aliases across contexts in the same tenant; normal decode never reveals credential originals.
 - Authenticated encryption via AES-256-GCM, per-context DEKs wrapped with a master-derived KEK; encrypted context blobs with strict TTL.
 - Optimistic CAS for multi-worker Redis, HTTP service, sync/async Python SDK, React + vanilla CSS operator demo UI.
 - Profiles for `generic-v1`, `agentic-soc-v1`, `soorin-copilot-v1`; source-specific typed registrations.
-- Docker multi-stage build, Docker Compose, GitHub Actions, Makefile, sample data, regression tests and docs.
+- Docker multi-stage build, Docker Compose, Makefile, sample data, regression tests and docs. A GitHub Actions workflow is not currently committed.
 
 ## Quick start: local development
 
 Prerequisites: **Python 3.11+**, Node 20+ (22 recommended), npm, and optionally Docker + Compose.
 
 ```bash
-python3 scripts/init_dev_env.py  # generates a new, secret, chmod-0600 .env; prints local API key
+python3 scripts/init_dev_env.py  # throwaway localhost DEV only; do not run if .env exists
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e './backend[dev]' -e ./sdk/python
@@ -52,6 +52,10 @@ npm run dev
 
 Open the UI, enter the local API key printed by `init_dev_env.py`, then press **Protect payload**. The UI has two editors: original input and provider-safe output. You can reverse the direction to decode a response using the active context ID. The key lives **only in component memory**, not localStorage or browser cookies; do not use a production credential in this demo console.
 
+## Environment configuration
+
+The repository includes [`.env.example`](.env.example), a **fail-closed template** (blank master key and no authorized clients). Copy it to `.env` and configure `DLP_MASTER_KEY_B64` and restricted `DLP_CLIENTS_JSON` for a real service. Alternatively run `scripts/init_dev_env.py` for a local-only development instance. The local `.env` file is ignored by Git. See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for secure key generation, network boundaries, and rotation.
+
 ## Quick start: Docker Compose
 
 ```bash
@@ -61,7 +65,7 @@ curl http://127.0.0.1:8484/ready
 # UI (dev-mode only): http://127.0.0.1:8484/
 ```
 
-Compose sets the store backend to Redis; Redis is **not exposed on a host port**. The API is published only on `127.0.0.1:8484`. A second shared ingress network allows the published API to be reached without exposing Redis. Configure TLS/authenticated Redis and a proper proxy or service mesh for real deployments. **Do not deploy this development Compose unchanged on an Internet-facing host.**
+Compose overrides the store backend to Redis; Redis is **not exposed on a host port**. **IMPORTANT:** the checked-in Compose file publishes the API on *all host interfaces* via `8484:8484`, not only loopback, and does not attach to a shared SOC network by default. For localhost testing, override the published port with `127.0.0.1:8484:8484`; for SOC integration attach only the API service to an existing private Docker network. The dev-only `/v1/dev/console` can disclose the demo API key when enabled, so never expose it on a shared network. Configure TLS/authenticated Redis, per-service credentials, and a proper proxy/service mesh for real deployments. **Do not deploy the bundled Compose unchanged on an Internet-facing host.**
 
 ## API example
 
