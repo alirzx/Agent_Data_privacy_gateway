@@ -112,6 +112,23 @@ docker compose -p soorin-privacy-v2 -f docker-compose.production.yml build \
 
 Only use package indexes operated by trusted parties. A mirror is a package supply-chain trust decision; for higher assurance, pin dependencies and verify wheel hashes in a separate hardening change. No secrets, API credentials, or private package tokens belong in Docker build arguments. The frontend's npm installation and the apt installation use different registries and are not changed by these Python-specific settings. The existing `soorin-privacy` Compose project on server 55 remains untouched when using `-p soorin-privacy-v2`.
 
+## Persistent isolated React UI for server-55 evaluation
+
+Production mode intentionally does not serve the browser-key UI. After building the production image, start **one separate development-mode container** with a random test-only key and an in-memory store. It must not use the production SOC bearer token, production master key, Redis URL, or shared `aisoc-privacy` network.
+
+```bash
+cd /root/Agent_Data_privacy_gateway
+python3 ops/init_ui_test_env.py  # creates .env.ui-test once (0600), refuses overwrite
+docker compose -p soorin-privacy-ui-test -f docker-compose.ui-test.yml config --quiet
+docker compose -p soorin-privacy-ui-test -f docker-compose.ui-test.yml up -d --no-build
+docker compose -p soorin-privacy-ui-test -f docker-compose.ui-test.yml ps
+curl --fail http://127.0.0.1:18484/ready
+```
+
+Port 18484 is bound only to host loopback. From a workstation with server access, run `ssh -L 18484:127.0.0.1:18484 api@192.168.0.55` and open `http://127.0.0.1:18484`. The UI automatically receives its demo-only key from `/v1/dev/console`; that route does **not** exist in production mode. The UI project uses restart policy `unless-stopped` but memory contexts expire or disappear on restart. It remains a **test console**, not an enterprise operator UI. Stop it when no longer needed.
+
+For real HTTPS production acceptance, the `ops/smoke_privacy_gateway.py` script runs entirely with Python's standard library, a read-only mounted Gateway CA, a read-only mounted SOC bearer token, and a canonical allowed SOC tenant UUID. It prints test outcomes only, never credentials or actual payloads. Run it from a throwaway Python container attached to `aisoc-privacy`. Use only synthetic Splunk-like data. A passing standalone smoke test still does not prove SOC agent egress is fail-closed.
+
 ## Server 55 production integration
 
 Deploy independently from Agentic_SOC using **only** `docker-compose.production.yml`, never merge it with development `docker-compose.yml`. Both projects use the existing `aisoc-privacy` external Docker bridge.

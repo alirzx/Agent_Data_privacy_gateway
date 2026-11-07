@@ -1,0 +1,27 @@
+# Isolated, loopback-only React demo; never attach to production Redis or the SOC network.
+name: soorin-privacy-ui-test
+services:
+  privacy-ui-test:
+    image: soorin-privacy-v2-privacy-api:latest
+    env_file: .env.ui-test
+    command:
+      - uvicorn
+      - app.main:create_app
+      - --factory
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8484"
+      - --workers
+      - "1"
+      - --no-access-log
+    ports:
+      - "127.0.0.1:18484:8484"
+    restart: unless-stopped
+    read_only: true
+    tmpfs: ["/tmp:size=64m"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 64
+    mem_limit: 768m
+    cpus: 0.5
