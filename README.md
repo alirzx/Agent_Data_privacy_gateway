@@ -65,7 +65,7 @@ curl http://127.0.0.1:8484/ready
 # UI (dev-mode only): http://127.0.0.1:8484/
 ```
 
-Compose overrides the store backend to Redis; Redis is **not exposed on a host port**. **IMPORTANT:** the checked-in Compose file publishes the API on *all host interfaces* via `8484:8484`, not only loopback, and does not attach to a shared SOC network by default. For localhost testing, override the published port with `127.0.0.1:8484:8484`; for SOC integration attach only the API service to an existing private Docker network. The dev-only `/v1/dev/console` can disclose the demo API key when enabled, so never expose it on a shared network. Configure TLS/authenticated Redis, per-service credentials, and a proper proxy/service mesh for real deployments. **Do not deploy the bundled Compose unchanged on an Internet-facing host.**
+Compose overrides the store backend to Redis and publishes the API **only on `127.0.0.1:8484`**. Redis has no host port. This is a **development-only** Compose, not a production deployment: use `docker-compose.production.yml` for server 55, which attaches only the HTTPS reverse proxy to the shared SOC network and uses authenticated Redis TLS. The dev-only `/v1/dev/console` can disclose the demo API key, so do not expose development mode on a shared network.
 
 ## API example
 
@@ -122,3 +122,7 @@ The sample fixtures contain **synthetic/test data only**, never real secrets or 
 ## License and operations
 
 No license has been selected by the organization yet. Before publishing this repository, choose a license and verify the provenance of test fixtures. Original Agentic SOC code is a design reference; this repository has independent implementations. See `docs/SECURITY_MODEL.md` for the actual trust assumptions.
+
+## Server 55: HTTPS deployment beside Agentic_SOC
+
+Use the independent [production Compose](docker-compose.production.yml) and the [server-55 deployment runbook](docs/DEPLOYMENT.md#server-55-production-integration). Only Caddy HTTPS joins external `aisoc-privacy`, reachable at `https://privacy-gateway:8443`; FastAPI and Redis stay on internal Docker networks. The existing Agentic_SOC network and private CA overrides are compatible. Do not deploy without trusted certificates, a configured Redis ACL, secrets, and passing preflight checks.

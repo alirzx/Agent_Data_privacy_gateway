@@ -1,0 +1,133 @@
+# Standalone server-55 production deployment: no host ports are published.
+# Requires provisioned TLS/ACL files and an external aisoc-privacy network.
+name: soorin-privacy
+services:
+  privacy-https:
+    image: caddy:2.10-alpine
+    command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
+    volumes:
+      - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - type: bind
+        source: ${DLP_TLS_CERT_HOST_PATH:?Set gateway certificate PEM path}
+        target: /run/secrets/gateway-cert.pem
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${DLP_TLS_KEY_HOST_PATH:?Set gateway private key PEM path}
+        target: /run/secrets/gateway-key.pem
+        read_only: true
+        bind: {create_host_path: false}
+    environment:
+      DLP_MAX_PAYLOAD_BYTES: ${DLP_MAX_PAYLOAD_BYTES:-67108864}
+    expose: ["8443"]
+    depends_on:
+      privacy-api:
+        condition: service_healthy
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+      - /config:size=16m
+      - /data:size=16m
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 128
+    mem_limit: 256m
+    cpus: 0.5
+    networks:
+      private_http: {}
+      soc_privacy:
+        aliases: ["${DLP_GATEWAY_DNS_NAME:-privacy-gateway}"]
+
+  privacy-api:
+    build: .
+    env_file: .env
+    environment:
+      # Explicitly enforce security posture, but keep runtime tuning configurable.
+      DLP_DEV_MODE: "false"
+      DLP_UI_ENABLED: "false"
+      DLP_DEMO_API_KEY: ""
+      DLP_STORE_BACKEND: redis
+      DLP_PROFILE_DIR: /opt/dlp/profiles
+      # Never overwrite the provisioned authenticated TLS Redis URL.
+      DLP_REDIS_URL: ${DLP_REDIS_URL:?Set authenticated rediss:// Redis URL}
+      DLP_CONTEXT_TTL: ${DLP_CONTEXT_TTL:-3600}
+      DLP_MAX_CONTEXT_TTL: ${DLP_MAX_CONTEXT_TTL:-86400}
+      DLP_MAX_ENTRIES: ${DLP_MAX_ENTRIES:-1000000}
+      DLP_MAX_PAYLOAD_BYTES: ${DLP_MAX_PAYLOAD_BYTES:-67108864}
+    volumes:
+      - type: bind
+        source: ${DLP_REDIS_CA_HOST_PATH:?Set Redis CA PEM path}
+        target: /run/secrets/redis-ca.pem
+        read_only: true
+        bind: {create_host_path: false}
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    read_only: true
+    tmpfs: ["/tmp:size=256m"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 256
+    mem_limit: ${DLP_API_MEMORY_LIMIT:-4g}
+    cpus: ${DLP_API_CPUS:-2.0}
+    networks: [private_http, private_store]
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "/etc/redis/redis.conf", "--maxmemory", "${DLP_REDIS_MAXMEMORY:-1gb}"]
+    volumes:
+      - ./deploy/redis/redis.conf:/etc/redis/redis.conf:ro
+      - type: bind
+        source: ${DLP_REDIS_TLS_CERT_HOST_PATH:?Set Redis server certificate PEM path}
+        target: /run/secrets/redis-cert.pem
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${DLP_REDIS_TLS_KEY_HOST_PATH:?Set Redis private key PEM path}
+        target: /run/secrets/redis-key.pem
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${DLP_REDIS_CA_HOST_PATH:?Set Redis CA PEM path}
+        target: /run/secrets/redis-ca.pem
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${DLP_REDIS_ACL_HOST_PATH:?Set Redis ACL file path}
+        target: /run/secrets/redis-users.acl
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${DLP_REDIS_PASSWORD_HOST_PATH:?Set Redis healthcheck credential path}
+        target: /run/secrets/redis-password
+        read_only: true
+        bind: {create_host_path: false}
+      - dlp-redis-production:/data
+    expose: ["6379"]
+    restart: unless-stopped
+    healthcheck:
+      # REDISCLI_AUTH is set only inside the healthcheck process, not in args.
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$(cat /run/secrets/redis-password)\" redis-cli --tls --cacert /run/secrets/redis-ca.pem -h redis -p 6379 --user dlp ping | grep -qx PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+      start_period: 15s
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 128
+    mem_limit: ${DLP_REDIS_MEMORY_LIMIT:-2g}
+    cpus: ${DLP_REDIS_CPUS:-1.0}
+    networks: [private_store]
+
+networks:
+  private_http:
+    internal: true
+  private_store:
+    internal: true
+  soc_privacy:
+    external: true
+    name: ${DLP_SHARED_NETWORK:-aisoc-privacy}
+
+volumes:
+  dlp-redis-production:

@@ -1,0 +1,27 @@
+{
+    admin off
+    auto_https off
+}
+
+:8443 {
+    tls /run/secrets/gateway-cert.pem /run/secrets/gateway-key.pem
+
+    request_body {
+        max_size {$DLP_MAX_PAYLOAD_BYTES}
+    }
+
+    header {
+        Strict-Transport-Security "max-age=31536000"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "no-referrer"
+        Cache-Control "no-store"
+    }
+
+    # Do not enable access logs of payload-bearing endpoints.
+    reverse_proxy privacy-api:8484 {
+        transport http {
+            dial_timeout 5s
+            response_header_timeout 600s
+        }
+    }
+}
