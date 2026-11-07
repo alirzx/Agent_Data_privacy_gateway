@@ -13,11 +13,33 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 COPY backend/pyproject.toml ./backend/pyproject.toml
 COPY backend/app/ ./backend/app/
-# Preinstall build tooling in the image env; isolated PEP517 builds often fail
-# when the builder cannot reach PyPI for setuptools (versions: none).
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
- && pip install --no-cache-dir --no-build-isolation ./backend \
- && useradd --create-home --uid 10001 --shell /usr/sbin/nologin dlp
+# Select package indexes one at a time (never --extra-index-url) to avoid
+# dependency confusion and tolerate inaccessible upstream PyPI networks.
+# Only HTTPS indexes are allowed; TLS certificate checks remain enabled.
+ARG PIP_INDEX_PRIMARY=https://package-mirror.liara.ir/repository/pypi/simple/
+ARG PIP_INDEX_SECONDARY=https://mirror2.chabokan.net/pypi/simple/
+ARG PIP_INDEX_FALLBACK=https://pypi.org/simple/
+ARG PIP_DEFAULT_TIMEOUT=30
+ARG PIP_RETRIES=2
+ARG PIP_DISABLE_PIP_VERSION_CHECK=1
+RUN set -eu; \
+    unset PIP_EXTRA_INDEX_URL; \
+    installed=0; \
+    for index in "$PIP_INDEX_PRIMARY" "$PIP_INDEX_SECONDARY" "$PIP_INDEX_FALLBACK"; do \
+      case "$index" in https://*) ;; *) echo "Refusing non-HTTPS PyPI index" >&2; exit 1 ;; esac; \
+      echo "Trying Python package index: $index"; \
+      if PIP_INDEX_URL="$index" python -m pip install --no-cache-dir --upgrade pip setuptools wheel \
+         && PIP_INDEX_URL="$index" python -m pip install --no-cache-dir --no-build-isolation ./backend; then \
+        installed=1; \
+        break; \
+      fi; \
+      echo "Python package index failed; trying next configured index" >&2; \
+    done; \
+    if [ "$installed" -ne 1 ]; then \
+      echo "ERROR: Python dependency installation failed on every configured index" >&2; \
+      exit 1; \
+    fi; \
+    useradd --create-home --uid 10001 --shell /usr/sbin/nologin dlp
 COPY profiles/ ./profiles/
 COPY --from=ui-build /ui/dist ./frontend/dist/
 USER 10001:10001

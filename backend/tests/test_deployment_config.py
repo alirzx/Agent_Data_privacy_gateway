@@ -48,6 +48,23 @@ def test_tls_config_and_request_body_limit():
     assert "appendonly yes" in redis
 
 
+def test_python_package_index_fallback_is_ordered_and_https_only():
+    dockerfile = (ROOT / "Dockerfile").read_text()
+    indexes = [
+        "ARG PIP_INDEX_PRIMARY=https://package-mirror.liara.ir/repository/pypi/simple/",
+        "ARG PIP_INDEX_SECONDARY=https://mirror2.chabokan.net/pypi/simple/",
+        "ARG PIP_INDEX_FALLBACK=https://pypi.org/simple/",
+    ]
+    positions = [dockerfile.index(index) for index in indexes]
+    assert positions == sorted(positions)
+    assert 'for index in "$PIP_INDEX_PRIMARY" "$PIP_INDEX_SECONDARY" "$PIP_INDEX_FALLBACK"' in dockerfile
+    assert 'case "$index" in https://*' in dockerfile
+    assert "unset PIP_EXTRA_INDEX_URL" in dockerfile
+    assert 'PIP_INDEX_URL="$index" python -m pip install' in dockerfile
+    assert "--no-build-isolation ./backend" in dockerfile
+    assert 'if [ "$installed" -ne 1 ]; then' in dockerfile
+
+
 def test_development_port_localhost_and_build_context_excludes_secrets():
     dev = yaml.safe_load((ROOT / "docker-compose.yml").read_text())
     assert dev["services"]["privacy-api"]["ports"] == ["127.0.0.1:8484:8484"]

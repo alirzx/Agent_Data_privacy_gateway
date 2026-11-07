@@ -79,6 +79,39 @@ The service loads **no LLM, no CUDA, no GPU and no large NLP model**. CPU/memory
 
 Current health endpoints provide liveness/readiness; no persistent audit sink or Prometheus metrics are implemented yet. Put authentication failures, policy deny counts, context TTL misses and latency into your organization's centralized telemetry without recording payloads or identities. Implement a hardened `/metrics` endpoint before enterprise launch.
 
+## Python package mirrors for restricted-network Docker builds
+
+The runtime image installs Python packages from one HTTPS index **at a time**, in a strict sequence:
+
+1. Liara: `https://package-mirror.liara.ir/repository/pypi/simple/`
+2. Chabokan: `https://mirror2.chabokan.net/pypi/simple/`
+3. Official PyPI: `https://pypi.org/simple/` (last resort)
+
+If installing either the Python build tools (`pip`, `setuptools`, `wheel`) or the application dependencies fails, that attempt moves to the next index. The build fails if all three sources fail. This is **sequential fallback**, not `--extra-index-url` mixing. TLS verification stays on, insecure HTTP indexes are rejected, and default pip timeouts/retries are 30 seconds/2 retries per request. A successful Simple API probe does not prove that all wheel downloads are reachable: verify a full Docker build.
+
+Default build (no local Dockerfile edits or production `.env` changes required):
+
+```bash
+cd /root/Agent_Data_privacy_gateway
+python3 ops/check_production_config.py --env .env
+docker compose -p soorin-privacy-v2 -f docker-compose.production.yml config --quiet
+docker compose -p soorin-privacy-v2 -f docker-compose.production.yml build privacy-api
+```
+
+The defaults are overridable at build time, for example:
+
+```bash
+docker compose -p soorin-privacy-v2 -f docker-compose.production.yml build \
+  --build-arg PIP_INDEX_PRIMARY=https://package-mirror.liara.ir/repository/pypi/simple/ \
+  --build-arg PIP_INDEX_SECONDARY=https://mirror2.chabokan.net/pypi/simple/ \
+  --build-arg PIP_INDEX_FALLBACK=https://pypi.org/simple/ \
+  --build-arg PIP_DEFAULT_TIMEOUT=45 \
+  --build-arg PIP_RETRIES=2 \
+  privacy-api
+```
+
+Only use package indexes operated by trusted parties. A mirror is a package supply-chain trust decision; for higher assurance, pin dependencies and verify wheel hashes in a separate hardening change. No secrets, API credentials, or private package tokens belong in Docker build arguments. The frontend's npm installation and the apt installation use different registries and are not changed by these Python-specific settings. The existing `soorin-privacy` Compose project on server 55 remains untouched when using `-p soorin-privacy-v2`.
+
 ## Server 55 production integration
 
 Deploy independently from Agentic_SOC using **only** `docker-compose.production.yml`, never merge it with development `docker-compose.yml`. Both projects use the existing `aisoc-privacy` external Docker bridge.
