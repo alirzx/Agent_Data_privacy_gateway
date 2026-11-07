@@ -51,6 +51,7 @@ def test_lan_ui_has_https_auth_and_is_opt_in():
 
     caddy = (ROOT / "deploy/caddy/UI-Caddyfile").read_text()
     assert "tls internal" in caddy
+    assert "default_sni {$DLP_UI_LAN_BIND_IP}" in caddy
     assert "basic_auth" in caddy
     assert "path /v1/policies /v1/contexts /v1/contexts/* /v1/classify /v1/encode /v1/decode" in caddy
     assert 'header Authorization "Bearer *"' in caddy

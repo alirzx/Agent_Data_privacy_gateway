@@ -1,6 +1,9 @@
 {
     admin off
     auto_https disable_redirects
+    # Browsers connecting to an IP address may omit the TLS SNI extension.
+    # Serve the certificate already issued for the private interface IP.
+    default_sni {$DLP_UI_LAN_BIND_IP}
 }
 
 # Only the optional test-only HTTPS proxy is reachable from the LAN/VPN.
