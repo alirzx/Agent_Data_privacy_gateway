@@ -23,7 +23,7 @@ def test_ui_compose_isolated_from_production():
     assert "volumes" not in ui
     assert "depends_on" not in ui
     assert "DLP_MASTER_KEY_B64" not in (ROOT / "docker-compose.ui-test.yml").read_text()
-    assert ".env.ui-test" in (ROOT / ".gitignore").read_text()
+    assert ".env.*" in (ROOT / ".gitignore").read_text()
 
 
 def test_ui_env_provisioner_refuses_overwrite():
