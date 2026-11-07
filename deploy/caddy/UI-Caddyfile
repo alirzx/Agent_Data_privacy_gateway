@@ -24,7 +24,7 @@ https://{$DLP_UI_LAN_BIND_IP}:8443 {
     # requires a separate network-access password before reaching FastAPI.
     handle {
         basic_auth {
-            {env.DLP_UI_ACCESS_USER} {env.DLP_UI_ACCESS_HASH}
+            {$DLP_UI_ACCESS_USER} {$DLP_UI_ACCESS_HASH}
         }
         reverse_proxy privacy-ui-test:8484 {
             header_up -Authorization

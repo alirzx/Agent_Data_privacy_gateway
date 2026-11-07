@@ -17,6 +17,12 @@ services:
       - --no-access-log
     ports:
       - "127.0.0.1:18484:8484"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8484/ready', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     restart: unless-stopped
     read_only: true
     tmpfs: ["/tmp:size=64m"]
