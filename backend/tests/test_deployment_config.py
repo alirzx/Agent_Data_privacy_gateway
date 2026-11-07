@@ -22,6 +22,16 @@ def test_production_network_isolation_and_https_only():
     assert services["privacy-https"]["expose"] == ["8443"]
 
 
+def test_caddy_execs_with_minimal_capability_under_no_new_privileges():
+    services = yaml.safe_load((ROOT / "docker-compose.production.yml").read_text())["services"]
+    proxy = services["privacy-https"]
+    assert proxy["cap_drop"] == ["ALL"]
+    assert proxy["cap_add"] == ["NET_BIND_SERVICE"]
+    assert proxy["security_opt"] == ["no-new-privileges:true"]
+    assert "cap_add" not in services["privacy-api"]
+    assert "cap_add" not in services["redis"]
+
+
 def test_production_requires_authenticated_redis_and_disables_demo():
     config = yaml.safe_load((ROOT / "docker-compose.production.yml").read_text())
     env = config["services"]["privacy-api"]["environment"]

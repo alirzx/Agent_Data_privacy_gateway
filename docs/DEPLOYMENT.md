@@ -164,6 +164,8 @@ python3 ops/generate_redis_acl.py --password-file /ABSOLUTE/PATH/redis-password 
 
 Certificates and private keys are supplied via read-only host bind mounts, **not committed**. DevOps owns certificate renewal and graceful reload. Restrict filesystem access based on the actual container UID. Do not log rendered Compose configuration because it may reveal credentials.
 
+**Caddy capability note:** The upstream `caddy:2.10-alpine` executable carries a `NET_BIND_SERVICE` file capability. With `cap_drop: [ALL]` and `no-new-privileges:true` alone, the container can fail before reading the Caddyfile with `exec /usr/bin/caddy: operation not permitted` (exit 255). The production proxy explicitly adds only `NET_BIND_SERVICE` while keeping all other capabilities dropped and `no-new-privileges` enabled. Redis and the API do not receive this capability. Recreate only `privacy-https` after deploying this Compose change; no image rebuild or TLS key permission changes are needed.
+
 ### Exact deployment commands on server 55
 
 ```bash
