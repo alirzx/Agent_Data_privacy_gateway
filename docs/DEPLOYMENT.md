@@ -129,6 +129,28 @@ Port 18484 is bound only to host loopback. From a workstation with server access
 
 For real HTTPS production acceptance, the `ops/smoke_privacy_gateway.py` script runs entirely with Python's standard library, a read-only mounted Gateway CA, a read-only mounted SOC bearer token, and a canonical allowed SOC tenant UUID. It prints test outcomes only, never credentials or actual payloads. Run it from a throwaway Python container attached to `aisoc-privacy`. Use only synthetic Splunk-like data. A passing standalone smoke test still does not prove SOC agent egress is fail-closed.
 
+### Optional authenticated HTTPS access from LAN/VPN
+
+The loopback UI at `127.0.0.1:18484` deliberately does **not** serve unauthenticated HTTP to the network. `ssh -N -L ...` waits silently after successful authentication; canceling at the password prompt aborts it.
+
+For an explicitly approved, private LAN/VPN-only evaluation endpoint, enable the optional `lan` Compose profile. It creates a **second Caddy proxy** at `https://<server-private-IP>:18485`, bound only to the selected private interface. The existing UI still uses its independent development-only master key, bearer credential and in-memory context store. The proxy requires a separate Basic Auth login for the HTML/assets and `/v1/dev/console` bootstrap. React's Bearer-authenticated `/v1/contexts`, `/v1/encode`, `/v1/decode`, `/v1/classify` and `/v1/policies` endpoints pass through to the backend's own bearer verifier, because Basic Auth on those requests would conflict with their `Authorization: Bearer` header. This is an evaluation UI, not a production BFF.
+
+**Do not open port 18485 to the internet.** Restrict source access at the network firewall/router to approved LAN/VPN client addresses, and remember Docker-published ports can bypass ordinary UFW rules. Check VPN routing to the target private IP. The proxy is disabled by default and its host port defaults to loopback until provisioned.
+
+On server 55, after updating the repository, run:
+
+```bash
+cd /root/Agent_Data_privacy_gateway
+python3 ops/init_ui_lan_env.py --bind-ip 192.168.0.55
+docker compose --env-file .env.ui-lan -p soorin-privacy-ui-test -f docker-compose.ui-test.yml --profile lan config --quiet
+docker compose --env-file .env.ui-lan -p soorin-privacy-ui-test -f docker-compose.ui-test.yml --profile lan up -d --no-build privacy-ui-lan
+docker compose --env-file .env.ui-lan -p soorin-privacy-ui-test -f docker-compose.ui-test.yml --profile lan ps
+```
+
+The provisioning script prompts privately for a password, hashes it through Caddy via stdin, and writes only a bcrypt hash plus private bind IP and username to `.env.ui-lan` (0600). It refuses overwrites. No production credentials are reused. There is no requirement to rebuild either API image. The proxy keeps a **dedicated Caddy internal CA** in its named `ui-caddy-data` volume. The first browser connection will not trust that CA until the **public CA certificate** is safely exported and imported into the workstation's trust store or Firefox Authorities, after verifying its SHA-256 fingerprint over an authenticated channel. Do not disable TLS verification or ignore certificate warnings. Do not copy out the Caddy CA private key.
+
+After trusting the UI CA, browse to `https://192.168.0.55:18485`, enter the separate UI network-access username/password, and use the frontend as before. Use a private LAN/VPN client and synthetic data only. The production HTTPS gateway at `https://privacy-gateway:8443` remains isolated, and the old Gateway is untouched.
+
 ## Server 55 production integration
 
 Deploy independently from Agentic_SOC using **only** `docker-compose.production.yml`, never merge it with development `docker-compose.yml`. Both projects use the existing `aisoc-privacy` external Docker bridge.

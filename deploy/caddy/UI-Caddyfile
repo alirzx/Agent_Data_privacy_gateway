@@ -1,0 +1,39 @@
+{
+    admin off
+    auto_https disable_redirects
+}
+
+# Only the optional test-only HTTPS proxy is reachable from the LAN/VPN.
+# An independent Caddy local CA is stored in a dedicated named volume.
+https://{$DLP_UI_LAN_BIND_IP}:8443 {
+    tls internal
+
+    # The React UI sends Authorization: Bearer <demo token> for API calls.
+    # Those endpoints are authenticated by FastAPI's existing bearer verifier.
+    # Keep the credential-bootstrap route OUT of this matcher.
+    @bearer_api {
+        path /v1/policies /v1/contexts /v1/contexts/* /v1/classify /v1/encode /v1/decode
+        header Authorization "Bearer *"
+    }
+
+    handle @bearer_api {
+        reverse_proxy privacy-ui-test:8484
+    }
+
+    # Everything else, including the UI and /v1/dev/console bootstrap,
+    # requires a separate network-access password before reaching FastAPI.
+    handle {
+        basic_auth {
+            {env.DLP_UI_ACCESS_USER} {env.DLP_UI_ACCESS_HASH}
+        }
+        reverse_proxy privacy-ui-test:8484 {
+            header_up -Authorization
+        }
+    }
+
+    header {
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "no-referrer"
+        Cache-Control "no-store"
+    }
+}

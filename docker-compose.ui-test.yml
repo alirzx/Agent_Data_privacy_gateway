@@ -25,3 +25,39 @@ services:
     pids_limit: 64
     mem_limit: 768m
     cpus: 0.5
+  
+  # Optional HTTPS entrypoint for trusted LAN/VPN clients. Never serve the
+  # development UI directly on a network-facing, unauthenticated HTTP port.
+  privacy-ui-lan:
+    profiles: ["lan"]
+    image: caddy:2.10-alpine
+    command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
+    ports:
+      # Defaults to loopback unless an explicit private interface is configured.
+      - "${DLP_UI_LAN_BIND_IP:-127.0.0.1}:18485:8443"
+    environment:
+      DLP_UI_LAN_BIND_IP: ${DLP_UI_LAN_BIND_IP:-127.0.0.1}
+      DLP_UI_ACCESS_USER: ${DLP_UI_ACCESS_USER:-}
+      DLP_UI_ACCESS_HASH: ${DLP_UI_ACCESS_HASH:-}
+    volumes:
+      - ./deploy/caddy/UI-Caddyfile:/etc/caddy/Caddyfile:ro
+      # Preserve only the dedicated test CA/cert across restarts.
+      - ui-caddy-data:/data
+    depends_on:
+      privacy-ui-test:
+        condition: service_healthy
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+      - /config:size=16m
+    cap_drop: [ALL]
+    # Required for the official Caddy binary even on an unprivileged port.
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 96
+    mem_limit: 256m
+    cpus: 0.5
+
+volumes:
+  ui-caddy-data:
