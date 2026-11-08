@@ -57,6 +57,21 @@ def main() -> None:
             raise AssertionError(f"{name}: expected {wanted!r}, got {actual!r}")
         print(f"PASS: {name}")
 
+    # The dedicated Gateway CA must be required; default system trust must
+    # reject this private-CA HTTPS endpoint in our test-only Python image.
+    untrusted = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),
+        urllib.request.HTTPSHandler(context=ssl.create_default_context()),
+    )
+    try:
+        untrusted.open(BASE + "/health", timeout=10).close()
+    except urllib.error.URLError as exc:
+        if not isinstance(exc.reason, ssl.SSLCertVerificationError):
+            raise AssertionError("Unexpected TLS failure category") from None
+    else:
+        raise AssertionError("Private Gateway certificate was accepted without its dedicated CA")
+    print("PASS: Unknown Gateway CA rejected")
+
     expect("HTTPS /health", call("/health")[0], 200)
     ready_code, ready = call("/ready")
     expect("Redis /ready", (ready_code, ready.get("store") if ready else None), (200, "redis"))
@@ -103,7 +118,12 @@ def main() -> None:
         raise AssertionError("Classification returned no findings or exposed originals")
     print("PASS: Classification found sensitive fields (counts only)")
 
+    expect("Unknown profile denied", call("/v1/contexts", "POST", {
+        "tenant_id": tenant, "profile": "nonexistent-synthetic"
+    })[0], 400)
+
     context_id = None
+    secondary_context_id = None
     try:
         code, context = call("/v1/contexts", "POST", {
             "tenant_id": tenant, "profile": "agentic-soc-v1"
@@ -118,6 +138,14 @@ def main() -> None:
         })
         expect("Encode mock notable", code, 200)
         protected = encoded["payload"]
+        expect("Context profile mismatch rejected", call("/v1/encode", "POST", {
+            "context_id": context_id, "profile": "generic-v1",
+            "format": "json", "payload": mock
+        })[0], 400)
+        expect("Context tenant mismatch rejected", call("/v1/encode", "POST", {
+            "context_id": context_id, "tenant_id": unauthorized_tenant,
+            "format": "json", "payload": mock
+        })[0], 400)
         if protected == mock or protected.get("src_ip") == mock["src_ip"]:
             raise AssertionError("Expected synthetic identity was not protected")
         print("PASS: Splunk identities were tokenized")
@@ -130,6 +158,49 @@ def main() -> None:
         expect("Decode mock notable", code, 200)
         expect("Non-credential round-trip", decoded["payload"], mock)
 
+        alias = protected["src_ip"]
+        if not isinstance(alias, str) or len(alias) < 2 or alias[-1] not in "0123456789ABCDEF":
+            raise AssertionError("Expected hexadecimal source IP alias")
+        mutated = alias[:-1] + ("0" if alias[-1] != "0" else "1")
+        code, unknown = call("/v1/decode", "POST", {
+            "context_id": context_id, "format": "json", "payload": {"src_ip": mutated}
+        })
+        expect("Unknown alias decoding request", code, 200)
+        if unknown["payload"]["src_ip"] != mutated or unknown["stats"]["unknown_aliases"] != 1:
+            raise AssertionError("Unknown alias unexpectedly restored")
+        print("PASS: Unknown alias never restored")
+
+        messages = [
+            {"role": "system", "content": "Analyze the synthetic SOC alert."},
+            {"role": "user", "content": "Investigate host dc01.corp.example and 10.20.3.7"},
+        ]
+        code, protected_messages = call("/v1/encode", "POST", {
+            "context_id": context_id, "format": "messages", "purpose": "llm-egress",
+            "payload": messages
+        })
+        expect("LLM messages encode", code, 200)
+        serialized = json.dumps(protected_messages["payload"])
+        if "dc01.corp.example" in serialized or "10.20.3.7" in serialized:
+            raise AssertionError("Identity leaked in encoded messages")
+        code, restored_messages = call("/v1/decode", "POST", {
+            "context_id": context_id, "format": "messages", "purpose": "llm-response",
+            "payload": protected_messages["payload"]
+        })
+        expect("LLM messages decode", code, 200)
+        expect("Messages round-trip", restored_messages["payload"], messages)
+
+        code, second = call("/v1/contexts", "POST", {
+            "tenant_id": tenant, "profile": "agentic-soc-v1"
+        })
+        expect("Same-tenant second context created", code, 201)
+        secondary_context_id = second["context_id"]
+        code, same_identity = call("/v1/encode", "POST", {
+            "context_id": secondary_context_id, "format": "json",
+            "purpose": "llm-egress", "payload": {"src_ip": mock["src_ip"]}
+        })
+        expect("Same-tenant second context encoded", code, 200)
+        expect("Stable tenant alias across contexts", same_identity["payload"]["src_ip"], alias)
+
         code, secret_encoded = call("/v1/encode", "POST", {
             "context_id": context_id, "format": "json", "purpose": "llm-egress",
             "payload": {"api_key": "SYNTHETIC_EXAMPLE_KEY_NOT_REAL"}
@@ -138,6 +209,13 @@ def main() -> None:
         if "SYNTHETIC_EXAMPLE_KEY_NOT_REAL" in json.dumps(secret_encoded["payload"]):
             raise AssertionError("Secret was not protected")
         print("PASS: Credential removed from egress payload")
+
+        code, restricted = call("/v1/decode", "POST", {
+            "context_id": context_id, "format": "json", "purpose": "llm-response",
+            "payload": secret_encoded["payload"], "reveal_credentials": False
+        })
+        expect("Credential non-reveal decode", code, 200)
+        expect("Credential remains protected", restricted["payload"]["api_key"], "[PROTECTED_CREDENTIAL]")
 
         expect("Credential reveal denied", call("/v1/decode", "POST", {
             "context_id": context_id, "format": "json",
@@ -152,11 +230,15 @@ def main() -> None:
         })[0], 400)
 
     finally:
+        if secondary_context_id:
+            code, _ = call("/v1/contexts/" + secondary_context_id, "DELETE")
+            expect("Secondary context deleted", code, 204)
         if context_id:
             code, _ = call("/v1/contexts/" + context_id, "DELETE")
             expect("Context deleted", code, 204)
+            expect("Deleted context cannot be read", call("/v1/contexts/" + context_id)[0], 400)
 
-    print("PASS: Production synthetic Splunk smoke test completed")
+    print("PASS: Extended production synthetic Splunk smoke test completed")
 
 
 if __name__ == "__main__":
