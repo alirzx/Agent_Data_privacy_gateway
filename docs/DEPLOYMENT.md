@@ -129,29 +129,41 @@ Port 18484 is bound only to host loopback. From a workstation with server access
 
 For real HTTPS production acceptance, the `ops/smoke_privacy_gateway.py` script runs entirely with Python's standard library, a read-only mounted Gateway CA, a read-only mounted SOC bearer token, and a canonical allowed SOC tenant UUID. It prints test outcomes only, never credentials or actual payloads. Run it from a throwaway Python container attached to `aisoc-privacy`. Use only synthetic Splunk-like data. A passing standalone smoke test still does not prove SOC agent egress is fail-closed.
 
-### Optional authenticated HTTPS access from LAN/VPN
+### Optional LAN/VPN HTTPS test UI (browser Basic Auth disabled by default)
 
-The loopback UI at `127.0.0.1:18484` deliberately does **not** serve unauthenticated HTTP to the network. `ssh -N -L ...` waits silently after successful authentication; canceling at the password prompt aborts it.
+This is an **isolated test-only UI** with an independent demo credential and memory store. It never joins the SOC network or production Redis. By default, the optional `lan` Caddy proxy serves `https://<private-server-IP>:8484` with `DLP_UI_BASIC_AUTH_ENABLED=false`, so any reachable LAN/VPN client can open the page and retrieve its **test-only** bearer token via `/v1/dev/console`. This is not a production operator UI. Use synthetic data only; restrict the port to approved LAN/VPN networks at the firewall/router (Docker-published ports can bypass ordinary UFW rules).
 
-For an explicitly approved, private LAN/VPN-only evaluation endpoint, enable the optional `lan` Compose profile. It creates a **second Caddy proxy** at `https://<server-private-IP>:18485`, bound only to the selected private interface. The existing UI still uses its independent development-only master key, bearer credential and in-memory context store. The proxy requires a separate Basic Auth login for the HTML/assets and `/v1/dev/console` bootstrap. React's Bearer-authenticated `/v1/contexts`, `/v1/encode`, `/v1/decode`, `/v1/classify` and `/v1/policies` endpoints pass through to the backend's own bearer verifier, because Basic Auth on those requests would conflict with their `Authorization: Bearer` header. This is an evaluation UI, not a production BFF.
+For **new** .env.ui-lan files:
 
-**Do not open port 18485 to the internet.** Restrict source access at the network firewall/router to approved LAN/VPN client addresses, and remember Docker-published ports can bypass ordinary UFW rules. Check VPN routing to the target private IP. The proxy is disabled by default and its host port defaults to loopback until provisioned.
+```bash
+python3 ops/init_ui_lan_env.py --bind-ip 192.168.0.55
+# No password prompt: creates .env.ui-lan mode 0600, HTTPS port 8484, auth disabled
+```
 
-On server 55, after updating the repository, run:
+For an **existing** .env.ui-lan, keep the file and any old bcrypt hash; add or update these settings without regenerating credentials:
+
+```dotenv
+DLP_UI_LAN_BIND_IP=192.168.0.55
+DLP_UI_LAN_PORT=8484
+DLP_UI_BASIC_AUTH_ENABLED=false
+```
+
+Set `DLP_UI_BASIC_AUTH_ENABLED=true` to use the separate authenticated Caddyfile. This requires valid `DLP_UI_ACCESS_USER` and `DLP_UI_ACCESS_HASH` values; startup fails if either is missing. For a new authenticated environment, run `python3 ops/init_ui_lan_env.py --bind-ip 192.168.0.55 --basic-auth`. The script hashes the prompted password via bcrypt and never stores plaintext.
+
+The same dedicated `ui-caddy-data` volume retains the internal CA; `default_sni` continues to support IP-based HTTPS clients. The browser must trust that CA rather than ignore certificate warnings.
+
+**Server 55 port conflict:** the legacy `soorin-privacy-privacy-api-1` still publishes `0.0.0.0:8484`. It must stop binding 8484 before the new proxy can publish `192.168.0.55:8484`. First audit consumers of the old API. After approval, stop **only** its API container, preserving Redis, Image and volumes for rollback. If the old API still needs 8484, temporarily keep `DLP_UI_LAN_PORT=18485` instead. SOC continues to use `https://privacy-gateway:8443` on the separate Production v2 project; do not touch it for this UI change.
+
+After verifying the port is available:
 
 ```bash
 cd /root/Agent_Data_privacy_gateway
-python3 ops/init_ui_lan_env.py --bind-ip 192.168.0.55
 docker compose --env-file .env.ui-lan -p soorin-privacy-ui-test -f docker-compose.ui-test.yml --profile lan config --quiet
-docker compose --env-file .env.ui-lan -p soorin-privacy-ui-test -f docker-compose.ui-test.yml --profile lan up -d --no-build privacy-ui-lan
+docker compose --env-file .env.ui-lan -p soorin-privacy-ui-test -f docker-compose.ui-test.yml --profile lan up -d --no-deps --no-build --force-recreate privacy-ui-lan
 docker compose --env-file .env.ui-lan -p soorin-privacy-ui-test -f docker-compose.ui-test.yml --profile lan ps
 ```
 
-The provisioning script prompts privately for a password, hashes it through Caddy via stdin, and writes only a bcrypt hash plus private bind IP and username to `.env.ui-lan` (0600). It refuses overwrites. No production credentials are reused. There is no requirement to rebuild either API image. The proxy keeps a **dedicated Caddy internal CA** in its named `ui-caddy-data` volume. The first browser connection will not trust that CA until the **public CA certificate** is safely exported and imported into the workstation's trust store or Firefox Authorities, after verifying its SHA-256 fingerprint over an authenticated channel. Do not disable TLS verification or ignore certificate warnings. Do not copy out the Caddy CA private key.
-
-**IP-address TLS handshake:** Clients connecting to an IP address can omit SNI. The UI Caddyfile sets `default_sni {$DLP_UI_LAN_BIND_IP}`, so Caddy can select the already-issued certificate for `192.168.0.55` even when no SNI is provided. To verify the fix before browser testing, compare `openssl s_client -connect 192.168.0.55:18485 -noservername -brief </dev/null` with `openssl s_client -connect 192.168.0.55:18485 -servername 192.168.0.55 -brief </dev/null`. Both should establish TLS. Before importing the public UI CA into Firefox, OpenSSL may report an untrusted issuer; that is separate from a failed handshake. Do not regenerate the UI Caddy CA volume, disable certificate verification or modify production certificates. The public UI CA certificate still needs to be trusted on each client machine.
-
-After trusting the UI CA, browse to `https://192.168.0.55:18485`, enter the separate UI network-access username/password, and use the frontend as before. Use a private LAN/VPN client and synthetic data only. The production HTTPS gateway at `https://privacy-gateway:8443` remains isolated, and the old Gateway is untouched.
+Rollback: stop the UI LAN proxy before restarting the legacy Gateway API on the same host port, or set the UI port back to 18485 and recreate only `privacy-ui-lan`. Do not delete the old Gateway volume or recreate the Caddy CA volume for this change.
 
 ## Server 55 production integration
 

@@ -33,20 +33,40 @@ services:
     cpus: 0.5
   
   # Optional HTTPS entrypoint for trusted LAN/VPN clients. Never serve the
-  # development UI directly on a network-facing, unauthenticated HTTP port.
+  # development UI directly on a public interface. Browser auth is optional and off by default.
   privacy-ui-lan:
     profiles: ["lan"]
     image: caddy:2.10-alpine
-    command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
+    # Select a Caddy config at startup; default mode has no browser login.
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        case "$${DLP_UI_BASIC_AUTH_ENABLED:-false}" in
+          false) config=/etc/caddy/UI-Caddyfile ;;
+          true)
+            if [ -z "$${DLP_UI_ACCESS_USER:-}" ] || [ -z "$${DLP_UI_ACCESS_HASH:-}" ]; then
+              echo "Basic Auth enabled but username/hash missing" >&2
+              exit 1
+            fi
+            config=/etc/caddy/UI-BasicAuth.Caddyfile
+            ;;
+          *)
+            echo "DLP_UI_BASIC_AUTH_ENABLED must be true or false" >&2
+            exit 1
+            ;;
+        esac
+        exec caddy run --config "$$config" --adapter caddyfile
     ports:
       # Defaults to loopback unless an explicit private interface is configured.
-      - "${DLP_UI_LAN_BIND_IP:-127.0.0.1}:18485:8443"
+      - "${DLP_UI_LAN_BIND_IP:-127.0.0.1}:${DLP_UI_LAN_PORT:-8484}:8443"
     environment:
       DLP_UI_LAN_BIND_IP: ${DLP_UI_LAN_BIND_IP:-127.0.0.1}
+      DLP_UI_BASIC_AUTH_ENABLED: ${DLP_UI_BASIC_AUTH_ENABLED:-false}
       DLP_UI_ACCESS_USER: ${DLP_UI_ACCESS_USER:-}
       DLP_UI_ACCESS_HASH: ${DLP_UI_ACCESS_HASH:-}
     volumes:
-      - ./deploy/caddy/UI-Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./deploy/caddy/UI-Caddyfile:/etc/caddy/UI-Caddyfile:ro
+      - ./deploy/caddy/UI-BasicAuth.Caddyfile:/etc/caddy/UI-BasicAuth.Caddyfile:ro
       # Preserve only the dedicated test CA/cert across restarts.
       - ui-caddy-data:/data
     depends_on:
